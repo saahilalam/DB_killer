@@ -1150,14 +1150,22 @@ def run_basedir(args):
                 _preserve_vardir(server, crash_vardir, crash_info)
 
                 # Save rr trace if enabled
-                if server.rr_trace and server.rr_trace_dir and os.path.isdir(server.rr_trace_dir):
-                    rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
-                    try:
-                        shutil.copytree(server.rr_trace_dir, rr_dest)
-                        logger.info(f"  rr trace saved: {rr_dest}")
-                        logger.info(f"  Replay with: rr replay {rr_dest}")
-                    except Exception as e:
-                        logger.warning(f"  Failed to save rr trace: {e}")
+                if server.rr_trace and server.rr_trace_dir:
+                    logger.info(f"  rr trace dir: {server.rr_trace_dir}")
+                    logger.info(f"  rr trace exists: {os.path.exists(server.rr_trace_dir)}")
+                    if os.path.exists(server.rr_trace_dir):
+                        trace_files = os.listdir(server.rr_trace_dir)
+                        logger.info(f"  rr trace files: {trace_files}")
+                    if os.path.isdir(server.rr_trace_dir):
+                        rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
+                        try:
+                            shutil.copytree(server.rr_trace_dir, rr_dest)
+                            logger.info(f"  rr trace saved: {rr_dest}")
+                            logger.info(f"  Replay with: rr replay {rr_dest}")
+                        except Exception as e:
+                            logger.warning(f"  Failed to save rr trace: {e}")
+                    else:
+                        logger.warning(f"  rr trace dir not found at {server.rr_trace_dir}")
 
                 # The infile IS the reproducer — copy it directly
                 crash_prefix = os.path.join(args.crash_dir, f"crash_{crash_count:04d}")
