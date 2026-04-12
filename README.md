@@ -101,12 +101,31 @@ DB_killer/
 ├── grammars/             # 70+ RQG .yy grammar files
 │   ├── modules/
 │   └── zz/              # .zz gendata files
-├── seeds/                # Seed SQL files
+├── seeds/                # 12K+ seed SQL statements
+│   ├── innodb_basic.sql          # Core InnoDB operations
+│   ├── innodb_stress.sql         # Boundary values and edge cases
+│   ├── rqg_innodb_patterns.sql   # RQG-derived patterns
+│   ├── pquery_patterns.sql       # Harvested from pquery SQL collections
+│   └── mariadb_test_patterns.sql # Harvested from MariaDB mysql-test suite
 ├── crashes/              # Crash output (created at runtime)
 ├── main.py               # CLI entry point
 ├── run.sh                # Convenience wrapper
 └── ...
 ```
+
+### Seed files
+
+The fuzzer ships with **12,000+ seed SQL statements** harvested from multiple sources for maximum diversity:
+
+| File | Lines | Source |
+|------|-------|--------|
+| `innodb_basic.sql` | 103 | Hand-written InnoDB DDL/DML basics |
+| `innodb_stress.sql` | 117 | Boundary values, edge cases, type limits |
+| `rqg_innodb_patterns.sql` | 1,013 | Patterns derived from RQG grammar expansion |
+| `pquery_patterns.sql` | 4,039 | Harvested from [mariadb-qa](https://github.com/mariadb-corporation/mariadb-qa) pquery SQL collections (main-ms-ps-md.sql, 11.3.sql, bugs_sql.sql, encryption_and_vault.sql) |
+| `mariadb_test_patterns.sql` | 6,876 | Harvested from MariaDB's `mysql-test` suite (innodb, encryption, partitions, generated columns, versioning, FTS, JSON) |
+
+The AST fuzzer parses these into ASTs, collects fragments (columns, literals, predicates, table structures), and cross-pollinates them across mutations. More diverse seeds = more diverse mutations = more bugs found.
 
 ## Quick Start
 
