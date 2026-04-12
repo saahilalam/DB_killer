@@ -892,7 +892,15 @@ def run_basedir(args):
             )
             logger.info(f"Data dir: {round_tmpdir} ({dbdir_type})")
 
-            server.start(extra_args=extra_args)
+            try:
+                server.start(extra_args=extra_args)
+            except RuntimeError as e:
+                logger.error(f"Server failed to start: {e}")
+                logger.info("Skipping this round, trying next...")
+                server.stop()
+                shutil.rmtree(round_tmpdir, ignore_errors=True)
+                time.sleep(args.round_delay)
+                continue
 
             import mysql.connector
 

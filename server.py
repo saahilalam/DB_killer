@@ -378,15 +378,21 @@ class MariaDBServer:
                     cmd.append(opt)
             logger.info(f"rr tracing ({self.dbdir_type} dir): {' '.join(rr_cmd)} → {self.rr_trace_dir}")
 
+        # Capture stderr to a file so we can diagnose rr/server startup failures
+        self._stderr_log = os.path.join(self.tmpdir, "startup_stderr.log")
+        stderr_fh = open(self._stderr_log, 'w')
+
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_fh,
             cwd=self.datadir,  # cores written to cwd by default
         )
 
         # Wait for server to be ready
-        if not self._wait_for_server(timeout=60):
+        rr_timeout = 120 if self.rr_trace else 60  # rr startup is slower
+        if not self._wait_for_server(timeout=rr_timeout):
+            stderr_fh.close()
             # Check if process died
             if self.process.poll() is not None:
                 logger.error(f"Server exited with code {self.process.returncode}")
@@ -394,8 +400,15 @@ class MariaDBServer:
                     with open(self.error_log, 'r') as f:
                         lines = f.readlines()
                         logger.error("Last error log lines:\n" + "".join(lines[-20:]))
+                # Show stderr (often has rr error messages)
+                if os.path.exists(self._stderr_log):
+                    with open(self._stderr_log, 'r') as f:
+                        stderr_text = f.read().strip()
+                    if stderr_text:
+                        logger.error(f"Stderr output:\n{stderr_text[:500]}")
                 raise RuntimeError("MariaDB server failed to start")
             raise RuntimeError("Timeout waiting for server to start")
+        stderr_fh.close()
 
         logger.info(f"MariaDB started (pid={self.process.pid}, port={self.port}, socket={self.socket_path})")
 
