@@ -359,11 +359,11 @@ class MariaDBServer:
         #   - rr+InnoDB on ext4 (slow dir) needs innodb_flush_method=fsync
         #   - set --loose-gdb --loose-debug-gdb for rr compatibility
         if self.rr_trace:
-            # rr requires the trace dir to NOT exist — it creates it itself.
-            # Remove if leftover from a previous failed attempt.
-            if os.path.exists(self.rr_trace_dir):
-                shutil.rmtree(self.rr_trace_dir)
-            rr_cmd = self.rr_trace.split() + ["-o", self.rr_trace_dir]
+            # Use _RR_TRACE_DIR env variable (same as RQG) instead of -o.
+            # This creates the standard rr directory structure:
+            #   rr_trace/mariadbd-0, rr_trace/mariadbd-1, rr_trace/latest-trace
+            os.makedirs(self.rr_trace_dir, exist_ok=True)
+            rr_cmd = self.rr_trace.split()
             cmd = rr_cmd + cmd
             # Base rr-required mysqld options (from local.cfg $rqg_rr_add)
             rr_mysqld_opts = [
@@ -385,11 +385,18 @@ class MariaDBServer:
         self._stderr_log = os.path.join(self.tmpdir, "startup_stderr.log")
         stderr_fh = open(self._stderr_log, 'w')
 
+        # Set _RR_TRACE_DIR so rr creates traces in our directory
+        # (same as RQG — produces mariadbd-0, mariadbd-1, latest-trace)
+        proc_env = os.environ.copy()
+        if self.rr_trace and self.rr_trace_dir:
+            proc_env['_RR_TRACE_DIR'] = self.rr_trace_dir
+
         self.process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=stderr_fh,
             cwd=self.datadir,  # cores written to cwd by default
+            env=proc_env,
         )
 
         # Wait for server to be ready

@@ -1151,24 +1151,33 @@ def run_basedir(args):
                 _preserve_vardir(server, crash_vardir, crash_info)
 
                 # Save rr trace if enabled
+                # With _RR_TRACE_DIR, rr creates: rr_trace/mariadbd-0, latest-trace, etc.
+                # We pack the latest-trace and copy the whole directory.
                 if server.rr_trace and server.rr_trace_dir:
-                    if os.path.isdir(server.rr_trace_dir):
+                    latest = os.path.join(server.rr_trace_dir, 'latest-trace')
+                    # Resolve symlink to actual trace dir
+                    trace_to_pack = os.path.realpath(latest) if os.path.exists(latest) else None
+                    if not trace_to_pack:
+                        # Fallback: find any mariadbd-* directory
+                        for entry in sorted(os.listdir(server.rr_trace_dir), reverse=True):
+                            candidate = os.path.join(server.rr_trace_dir, entry)
+                            if os.path.isdir(candidate) and 'mariadbd' in entry:
+                                trace_to_pack = candidate
+                                break
+                    if trace_to_pack and os.path.isdir(trace_to_pack):
                         rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
                         try:
-                            # 'rr pack' makes the trace self-contained by
-                            # embedding all needed binaries/libraries.
-                            # Without this, the mmap_hardlink files (hardlinks
-                            # to mariadbd) get lost when the tmpdir is cleaned.
+                            # 'rr pack' embeds binaries for portable replay
                             subprocess.run(
-                                ['rr', 'pack', server.rr_trace_dir],
+                                ['rr', 'pack', trace_to_pack],
                                 capture_output=True, timeout=120)
-                            shutil.copytree(server.rr_trace_dir, rr_dest)
+                            shutil.copytree(trace_to_pack, rr_dest)
                             logger.info(f"  rr trace saved: {rr_dest}")
                             logger.info(f"  Replay with: rr replay {rr_dest}")
                         except Exception as e:
                             logger.warning(f"  Failed to save rr trace: {e}")
                     else:
-                        logger.warning(f"  rr trace dir not found at {server.rr_trace_dir}")
+                        logger.warning(f"  rr trace not found in {server.rr_trace_dir}")
 
                 # The infile IS the reproducer — copy it directly
                 crash_prefix = os.path.join(args.crash_dir, f"crash_{crash_count:04d}")
