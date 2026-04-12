@@ -359,7 +359,10 @@ class MariaDBServer:
         #   - rr+InnoDB on ext4 (slow dir) needs innodb_flush_method=fsync
         #   - set --loose-gdb --loose-debug-gdb for rr compatibility
         if self.rr_trace:
-            os.makedirs(self.rr_trace_dir, exist_ok=True)
+            # rr requires the trace dir to NOT exist — it creates it itself.
+            # Remove if leftover from a previous failed attempt.
+            if os.path.exists(self.rr_trace_dir):
+                shutil.rmtree(self.rr_trace_dir)
             rr_cmd = self.rr_trace.split() + ["-o", self.rr_trace_dir]
             cmd = rr_cmd + cmd
             # Base rr-required mysqld options (from local.cfg $rqg_rr_add)
