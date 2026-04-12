@@ -152,6 +152,20 @@ INNODB_COMBINATIONS = [
 ]
 
 
+# rr tracing options — matches InnoDB_standard.cc:
+#   ~2/3 of runs use rr (trace analysis is faster than core dumps)
+#   ~1/3 without rr (covers libaio/liburing code paths)
+#   When rr is off, use native-aio=1 to cover that path.
+RR_COMBINATIONS = [
+    # rr record --wait (standard)
+    "rr record --wait",
+    # rr record --chaos --wait (randomized thread scheduling — better for races)
+    "rr record --chaos --wait",
+    # No rr — cover native-aio path
+    "",
+]
+
+
 def pick_innodb_combination():
     """
     Pick one random option from each axis of the combinations matrix.
@@ -166,10 +180,22 @@ def pick_innodb_combination():
     return args
 
 
+def pick_rr_mode():
+    """Pick a random rr mode from RR_COMBINATIONS.
+
+    Returns the rr command string (e.g. 'rr record --wait') or empty
+    string for no-rr runs.  When rr is off, returns
+    '--innodb_use_native_aio=1' as an extra mysqld option to cover
+    the libaio/liburing path.
+    """
+    return random.choice(RR_COMBINATIONS)
+
+
 class MariaDBServer:
     """Manages a MariaDB server instance from a build directory."""
 
-    def __init__(self, basedir, datadir=None, port=None, tmpdir=None):
+    def __init__(self, basedir, datadir=None, port=None, tmpdir=None,
+                 rr_trace=False, dbdir_type='fast'):
         self.basedir = os.path.abspath(basedir)
         self.port = port or self._find_free_port()
         self.tmpdir = tmpdir or tempfile.mkdtemp(prefix="ast_fuzzer_")
@@ -179,6 +205,12 @@ class MariaDBServer:
         self.error_log = os.path.join(self.tmpdir, "error.log")
         self.process = None
         self._initialized = False
+        # rr_trace: False/None = disabled, or a string like 'rr record' / 'rr record --chaos --wait'
+        self.rr_trace = rr_trace
+        # dbdir_type: 'fast' (tmpfs/RAM) or 'slow' (ext4/HDD/SSD)
+        # Affects rr options — ext4 needs --innodb_flush_method=fsync
+        self.dbdir_type = dbdir_type
+        self.rr_trace_dir = os.path.join(self.tmpdir, "rr_trace") if rr_trace else None
 
         # Binaries
         self.mysqld = os.path.join(basedir, "bin", "mariadbd")
@@ -319,6 +351,32 @@ class MariaDBServer:
         # Set working directory to datadir so core dumps land there
         # Also try to set core_pattern to write into datadir (needs root)
         self._setup_core_to_vardir()
+
+        # Wrap with rr if enabled (e.g. 'rr record', 'rr record --chaos --wait')
+        # Following InnoDB_standard.cc + local.cfg conventions:
+        #   - rr has trouble with libaio/liburing → force native-aio=0
+        #   - tracing can cause fake hangs → limit write/read-io-threads
+        #   - rr+InnoDB on ext4 (slow dir) needs innodb_flush_method=fsync
+        #   - set --loose-gdb --loose-debug-gdb for rr compatibility
+        if self.rr_trace:
+            os.makedirs(self.rr_trace_dir, exist_ok=True)
+            rr_cmd = self.rr_trace.split() + ["-o", self.rr_trace_dir]
+            cmd = rr_cmd + cmd
+            # Base rr-required mysqld options (from local.cfg $rqg_rr_add)
+            rr_mysqld_opts = [
+                "--loose-innodb-use-native-aio=0",
+                "--loose-innodb-write-io-threads=2",
+                "--loose-innodb-read-io-threads=1",
+                "--loose-gdb",
+                "--loose-debug-gdb",
+            ]
+            # Slow dir (ext4/HDD/SSD) needs fsync (from local.cfg $rqg_slow_dbdir_rr_add)
+            if self.dbdir_type == 'slow':
+                rr_mysqld_opts.append("--loose-innodb_flush_method=fsync")
+            for opt in rr_mysqld_opts:
+                if opt not in cmd:
+                    cmd.append(opt)
+            logger.info(f"rr tracing ({self.dbdir_type} dir): {' '.join(rr_cmd)} → {self.rr_trace_dir}")
 
         self.process = subprocess.Popen(
             cmd,

@@ -64,11 +64,20 @@ Built on the same principles as [ClickHouse's AST fuzzer](https://clickhouse.com
   - `pquery2-md` — fast multi-threaded SQL replay client (C++)
   - `reducer.sh` — battle-tested crash reduction framework
 
+### Optional (recommended)
+
+- **rr** (record & replay debugger) — enables deterministic crash replay:
+  ```bash
+  apt install rr    # or see https://rr-project.org
+  ```
+  When `--rr` is passed, mariadbd runs under `rr record`. On crash, the rr trace is saved and can be replayed with `rr replay` — step forwards and backwards through the exact execution. No more sporadic crashes.
+
 ### System requirements
 
 - Linux (tested on Ubuntu 22.04+)
 - `core_pattern` set to dump cores to a path GDB can read (the fuzzer sets this automatically)
 - Sufficient disk space for core dumps (~500MB per crash for debug builds)
+- For `--rr`: `perf_event_paranoid` must be <= 1 (`echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid`)
 
 ## Installation
 
@@ -102,10 +111,10 @@ DB_killer/
 ## Quick Start
 
 ```bash
-# Run against a MariaDB debug build — continuous fuzzing
+# Simplest — continuous fuzzing with randomized options
 ./run.sh /path/to/mariadb-debug-build
 
-# Or with more control
+# Recommended — with rr tracing + fast/slow dirs
 python3 main.py \
     --basedir /path/to/mariadb-debug-build \
     --seed-dir seeds/ \
@@ -113,18 +122,22 @@ python3 main.py \
     --rounds 0 \
     --round-delay 5 \
     --trials 10 \
-    --randomize-options
+    --randomize-options \
+    --rr \
+    --fast-dir /dev/shm/db_killer \
+    --slow-dir /data/db_killer
 ```
 
 That's it. The fuzzer will:
-1. Initialize a fresh MariaDB datadir
+1. Initialize a fresh MariaDB datadir (alternating between fast/slow dirs)
 2. Start the server with randomized InnoDB options
-3. Create 14 test tables with diverse schemas
-4. Generate ~30K+ fuzzed queries per round
-5. Replay via pquery (3+ trials per round: sequential + shuffled)
-6. Detect crashes, extract GDB backtraces, deduplicate by signature
-7. Save everything to `./crashes/`
-8. Stop the server, wait, start a new round with different options
+3. Randomly run under `rr record` (~2/3 of rounds) or without (~1/3 for native-aio coverage)
+4. Create 14 test tables with diverse schemas
+5. Generate ~30K+ fuzzed queries per round
+6. Replay via pquery (multiple trials per round: sequential + shuffled)
+7. Detect crashes, extract GDB backtraces, save rr traces, deduplicate by signature
+8. Save everything to `./crashes/`
+9. Stop the server, wait, start a new round with different options
 
 ## Command Line Options
 
@@ -140,6 +153,30 @@ That's it. The fuzzer will:
 | `--trials N` | 3 | pquery replay trials per round |
 | `--randomize-options` | off | Randomize InnoDB startup options each round |
 | `--crash-dir` | `./crashes` | Where crash reports are saved |
+
+### rr tracing options
+
+| Option | Description |
+|--------|-------------|
+| `--rr` | Auto-randomize per round: ~2/3 with rr, ~1/3 without (same as InnoDB_standard.cc). Alternates between `rr record --wait` and `rr record --chaos --wait`. Rounds without rr use `--innodb_use_native_aio=1` for libaio coverage. |
+| `--rr='rr record --wait'` | Fixed mode: every round uses `rr record --wait` |
+| `--rr='rr record --chaos --wait'` | Fixed mode: every round uses chaos mode (randomized thread scheduling, better for race conditions) |
+
+When rr is active, the following mysqld options are auto-added (per InnoDB_standard.cc + local.cfg):
+- `--innodb-use-native-aio=0` (rr can't handle libaio/liburing)
+- `--innodb-write-io-threads=2` (reduces fake hangs under tracing)
+- `--innodb-read-io-threads=1` (reduces fake hangs under tracing)
+- `--loose-gdb --loose-debug-gdb` (rr+gdb compatibility)
+- `--innodb_flush_method=fsync` (only when using slow/ext4 dir)
+
+### Fast/slow directory options
+
+Following the RQG `local.cfg` convention, runs can alternate between RAM-based (tmpfs) and disk-based (ext4) directories. This covers different filesystem code paths in InnoDB.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fast-dir` | `/dev/shm/db_killer` | RAM-based directory (tmpfs). Higher I/O throughput, better for finding bugs. |
+| `--slow-dir` | (none) | Disk-based directory (ext4/HDD/SSD). When set, rounds alternate 50/50 between fast and slow. Covers different filesystem code paths. With `--rr`, auto-adds `--innodb_flush_method=fsync`. |
 
 ### Generation options
 
@@ -172,11 +209,29 @@ crashes/
 ├── crash_0001.bt         # Full GDB backtrace (set print addr off; bt)
 ├── crash_0001.sh         # One-click repro script
 ├── crash_0001_reducer.sh # Pre-configured pquery reducer wrapper
+├── crash_0001_rr/        # rr trace (when --rr enabled)
 ├── crash_0001_vardir/    # Server data directory snapshot
 │   ├── data/             # InnoDB datadir + core dump
 │   └── error.log         # MariaDB error log with crash details
 └── crash_0001_repro/     # Reproduction working directory
 ```
+
+### Replaying an rr trace
+
+When a crash has an rr trace, you can replay the exact execution deterministically:
+
+```bash
+# Replay in GDB — step forwards AND backwards through the crash
+rr replay crashes/crash_0001_rr
+
+# Inside rr/gdb:
+(rr) continue          # run to the crash point
+(rr) bt                # see the backtrace
+(rr) reverse-continue  # step backwards to find the root cause
+(rr) watch -l some_var # hardware watchpoint, works in reverse too
+```
+
+This eliminates the "sporadic crash" problem entirely — every rr-traced crash is perfectly reproducible.
 
 ### Reproducing a crash
 
@@ -276,10 +331,13 @@ backup_log_ddl|mysql_create_or_drop_trigger
 
 1. **Use debug builds** (`-DCMAKE_BUILD_TYPE=Debug` or `-Og` optimization) — they have assertions enabled that catch bugs release builds silently corrupt through
 2. **Use `--rounds 0 --randomize-options`** — different InnoDB configurations exercise different code paths
-3. **Increase `--trials`** for sporadic crashes — `--trials 10` gives 10x more chances per round
-4. **Add your own seed files** — regression test queries, bug reproducers, and application queries all make excellent seeds
-5. **Check the `.bt` files** — full GDB backtraces are saved automatically for every crash
-6. **Feed crash queries back as seeds** — add reduced crash queries to `seeds/` for the next run
+3. **Use `--rr`** — rr traces make every crash deterministically replayable. No more "sporadic" crashes. The `--rr` auto mode (2/3 rr, 1/3 without) matches MariaDB's own QA setup
+4. **Use `--fast-dir` + `--slow-dir`** — alternating between tmpfs and ext4 covers different InnoDB I/O paths
+5. **Increase `--trials`** for non-rr runs — `--trials 10` gives 10x more chances per round
+6. **Add your own seed files** — regression test queries, bug reproducers, and application queries all make excellent seeds
+7. **Check the `.bt` files** — full GDB backtraces are saved automatically for every crash
+8. **Feed crash queries back as seeds** — add reduced crash queries to `seeds/` for the next run
+9. **Use `rr replay`** to debug crashes — step backwards from the crash point to find root causes
 
 ## License
 

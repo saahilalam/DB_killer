@@ -744,7 +744,15 @@ def run_basedir(args):
         logger.error("Install from: https://github.com/nicholasgasior/pquery")
         sys.exit(1)
 
-    from server import MariaDBServer, pick_innodb_combination
+    # Verify rr is installed if --rr is used
+    if args.rr:
+        if shutil.which("rr") is None:
+            logger.error("--rr requested but 'rr' is not installed.")
+            logger.error("Install: apt install rr  (or see https://rr-project.org)")
+            sys.exit(1)
+        logger.info(f"rr tracing enabled — server will run under: {args.rr}")
+
+    from server import MariaDBServer, pick_innodb_combination, pick_rr_mode
     from schema import generate_setup_sql, build_schema_from_setup, SchemaTracker
     from generator import generate_statement
     from grammar import GrammarPool
@@ -846,12 +854,42 @@ def run_basedir(args):
                 logger.info(f"InnoDB options: {' '.join(combo)}")
             logger.info("=" * 60)
 
+            # --- Pick fast or slow dir for this round ---
+            # When --slow-dir is set, alternate 50/50 (same as InnoDB_standard.cc)
+            if args.slow_dir and round_num % 2 == 0:
+                dbdir_type = 'slow'
+                round_tmpdir = tempfile.mkdtemp(prefix="db_killer_", dir=args.slow_dir)
+            else:
+                dbdir_type = 'fast'
+                os.makedirs(args.fast_dir, exist_ok=True)
+                round_tmpdir = tempfile.mkdtemp(prefix="db_killer_", dir=args.fast_dir)
+
+            # --- Pick rr mode for this round ---
+            # --rr (auto): randomize per round — 2/3 rr, 1/3 without
+            # --rr='rr record --wait': fixed mode for all rounds
+            # No --rr: never use rr
+            rr_mode = False
+            if args.rr:
+                if args.rr == 'auto':
+                    rr_mode = pick_rr_mode()  # random: 'rr record --wait', '--chaos --wait', or ''
+                    if rr_mode:
+                        logger.info(f"rr mode this round: {rr_mode}")
+                    else:
+                        logger.info("rr mode this round: OFF (native-aio coverage)")
+                        extra_args.append("--loose-innodb_use_native_aio=1")
+                else:
+                    rr_mode = args.rr  # fixed mode for all rounds
+
             # --- Start fresh server for this round ---
             server = MariaDBServer(
                 basedir=args.basedir,
                 datadir=args.datadir if round_num == 1 else None,  # fresh tmpdir after round 1
                 port=args.port if args.port != 3306 else None,
+                tmpdir=round_tmpdir,
+                rr_trace=rr_mode if rr_mode else False,
+                dbdir_type=dbdir_type,
             )
+            logger.info(f"Data dir: {round_tmpdir} ({dbdir_type})")
 
             server.start(extra_args=extra_args)
 
@@ -1093,6 +1131,16 @@ def run_basedir(args):
                 # Preserve vardir
                 crash_vardir = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_vardir")
                 _preserve_vardir(server, crash_vardir, crash_info)
+
+                # Save rr trace if enabled
+                if server.rr_trace and server.rr_trace_dir and os.path.isdir(server.rr_trace_dir):
+                    rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
+                    try:
+                        shutil.copytree(server.rr_trace_dir, rr_dest)
+                        logger.info(f"  rr trace saved: {rr_dest}")
+                        logger.info(f"  Replay with: rr replay {rr_dest}")
+                    except Exception as e:
+                        logger.warning(f"  Failed to save rr trace: {e}")
 
                 # The infile IS the reproducer — copy it directly
                 crash_prefix = os.path.join(args.crash_dir, f"crash_{crash_count:04d}")
@@ -1818,6 +1866,23 @@ Examples:
     parser.add_argument("--randomize-options", action="store_true",
                         help="Randomize InnoDB startup options (page_size, buffer_pool, etc.) "
                              "from the InnoDB_standard.cc combinations matrix")
+    parser.add_argument("--rr", type=str, nargs='?', const='auto', default=None,
+                        help="Run mariadbd under rr. "
+                             "--rr (no value) = auto-randomize per round: 2/3 with rr, "
+                             "1/3 without (same as InnoDB_standard.cc). "
+                             "--rr='rr record --wait' = fixed rr mode for ALL rounds. "
+                             "--rr='rr record --chaos --wait' = chaos mode for ALL rounds. "
+                             "On crash, rr trace is saved to crashes/ for 'rr replay'.")
+    parser.add_argument("--fast-dir", type=str, default="/dev/shm/db_killer",
+                        help="Fast (tmpfs/RAM) directory for server datadir. "
+                             "RAM-based = higher I/O throughput, better for finding bugs. "
+                             "(default: /dev/shm/db_killer)")
+    parser.add_argument("--slow-dir", type=str, default=None,
+                        help="Slow (ext4/HDD/SSD) directory for server datadir. "
+                             "Covers different filesystem code paths than tmpfs. "
+                             "When set, rounds alternate 50/50 between fast and slow dirs "
+                             "(same as InnoDB_standard.cc). "
+                             "With --rr, slow dir auto-adds --innodb_flush_method=fsync.")
     parser.add_argument("--rounds", type=int, default=1,
                         help="Number of rounds to run (0 = infinite). Each round picks new "
                              "randomized InnoDB options and restarts the server. (default: 1)")
