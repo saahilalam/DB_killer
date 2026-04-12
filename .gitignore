@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Runtime output
+crashes/
+*.sql.bak
+
+# Core dumps
+core.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# mariadb-qa (cloned separately)
+mariadb-qa/
+
+# Claude Code (personal)
+MEMORY.md
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

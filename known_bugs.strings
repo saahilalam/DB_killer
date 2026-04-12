@@ -1,0 +1,16 @@
+# Known bug signatures for crash deduplication (pquery-compatible format)
+#
+# Format: SIGNATURE  ## MDEV-XXXXX or comment
+#   SIGNATURE is a pipe-separated string: [assertion|]SIGNAL|frame1|frame2|frame3|frame4
+#
+# Matching: fixed-string substring match (same as pquery's grep -F)
+#
+# To suppress a known crash, copy the signature line from:
+#   crashes/seen_signatures.strings  or  crashes/crash_XXXX.sig
+# into this file.
+#
+# Examples:
+#   SIGABRT|Diagnostics_area::set_ok_status|mysql_insert  ## MDEV-12345
+#   SIGSEGV|Field::check_assignability_from|Item::check_assignability_to  ## MDEV-34780
+#   m_status == DA_ERROR|SIGABRT|THD::raise_condition  ## assertion crash
+#
