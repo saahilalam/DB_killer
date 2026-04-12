@@ -1152,14 +1152,16 @@ def run_basedir(args):
 
                 # Save rr trace if enabled
                 if server.rr_trace and server.rr_trace_dir:
-                    logger.info(f"  rr trace dir: {server.rr_trace_dir}")
-                    logger.info(f"  rr trace exists: {os.path.exists(server.rr_trace_dir)}")
-                    if os.path.exists(server.rr_trace_dir):
-                        trace_files = os.listdir(server.rr_trace_dir)
-                        logger.info(f"  rr trace files: {trace_files}")
                     if os.path.isdir(server.rr_trace_dir):
                         rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
                         try:
+                            # 'rr pack' makes the trace self-contained by
+                            # embedding all needed binaries/libraries.
+                            # Without this, the mmap_hardlink files (hardlinks
+                            # to mariadbd) get lost when the tmpdir is cleaned.
+                            subprocess.run(
+                                ['rr', 'pack', server.rr_trace_dir],
+                                capture_output=True, timeout=120)
                             shutil.copytree(server.rr_trace_dir, rr_dest)
                             logger.info(f"  rr trace saved: {rr_dest}")
                             logger.info(f"  Replay with: rr replay {rr_dest}")
