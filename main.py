@@ -1151,14 +1151,15 @@ def run_basedir(args):
                 _preserve_vardir(server, crash_vardir, crash_info)
 
                 # Save rr trace if enabled
-                # With _RR_TRACE_DIR, rr creates: rr_trace/mariadbd-0, latest-trace, etc.
-                # We pack the latest-trace and copy the whole directory.
-                if server.rr_trace and server.rr_trace_dir:
+                # With _RR_TRACE_DIR, rr creates the standard structure:
+                #   rr_trace/mariadbd-0, mariadbd-1, latest-trace, cpu_lock
+                # We pack the latest trace (embeds binaries) then copy the
+                # whole directory — same format as RQG.
+                if server.rr_trace and server.rr_trace_dir and os.path.isdir(server.rr_trace_dir):
+                    # Find latest trace to pack
                     latest = os.path.join(server.rr_trace_dir, 'latest-trace')
-                    # Resolve symlink to actual trace dir
                     trace_to_pack = os.path.realpath(latest) if os.path.exists(latest) else None
                     if not trace_to_pack:
-                        # Fallback: find any mariadbd-* directory
                         for entry in sorted(os.listdir(server.rr_trace_dir), reverse=True):
                             candidate = os.path.join(server.rr_trace_dir, entry)
                             if os.path.isdir(candidate) and 'mariadbd' in entry:
@@ -1171,7 +1172,9 @@ def run_basedir(args):
                             subprocess.run(
                                 ['rr', 'pack', trace_to_pack],
                                 capture_output=True, timeout=120)
-                            shutil.copytree(trace_to_pack, rr_dest)
+                            # Copy the whole rr directory (mariadbd-0, latest-trace, cpu_lock)
+                            shutil.copytree(server.rr_trace_dir, rr_dest,
+                                            symlinks=True)
                             logger.info(f"  rr trace saved: {rr_dest}")
                             logger.info(f"  Replay with: rr replay {rr_dest}")
                         except Exception as e:
