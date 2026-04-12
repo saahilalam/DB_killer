@@ -1044,13 +1044,20 @@ def run_basedir(args):
 
                 shuffle = trial > 1  # First trial sequential, rest shuffled
 
+                # Pick thread count for this trial
+                if args.multi_threaded:
+                    # Same thread counts as InnoDB_standard.cc
+                    num_threads = random.choice([1, 2, 3, 6, 9, 33])
+                else:
+                    num_threads = 1
+
                 pquery_cmd = [
                     pquery_bin,
                     f"--infile={infile}",
                     f"--socket={server.socket_path}",
                     "--user=root",
                     "--database=test",
-                    "--threads=1",
+                    f"--threads={num_threads}",
                     f"--queries-per-thread={generated}",
                     f"--logdir={pquery_log_dir}",
                     "--log-all-queries",
@@ -1059,7 +1066,8 @@ def run_basedir(args):
                     pquery_cmd.append("--no-shuffle")
 
                 mode_str = "shuffled" if shuffle else "sequential"
-                logger.info(f"  Trial {trial}/{num_trials} ({mode_str})...")
+                thread_str = f", {num_threads} threads" if num_threads > 1 else ""
+                logger.info(f"  Trial {trial}/{num_trials} ({mode_str}{thread_str})...")
 
                 try:
                     pquery_proc = subprocess.run(
@@ -1849,6 +1857,11 @@ Examples:
                         help="pquery replay trials per round (default: 3). "
                              "Trial 1 is sequential, rest are shuffled for "
                              "different timing/state combinations.")
+    parser.add_argument("--multi-threaded", action="store_true",
+                        help="Enable multi-threaded pquery replay. Each trial randomly "
+                             "picks 1, 2, 3, 6, 9, or 33 threads (same as InnoDB_standard.cc). "
+                             "Multi-threaded replay triggers race conditions and "
+                             "concurrency bugs that single-threaded replay cannot.")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     parser.add_argument("--no-transactions", action="store_true", help="Don't inject transaction statements")
     parser.add_argument("--no-alters", action="store_true", help="Don't inject ALTER TABLE statements")
