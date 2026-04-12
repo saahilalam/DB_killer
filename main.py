@@ -866,18 +866,19 @@ def run_basedir(args):
                 round_tmpdir = tempfile.mkdtemp(prefix="db_killer_", dir=args.fast_dir)
 
             # --- Pick rr mode for this round ---
-            # --rr (auto): randomize per round — 2/3 rr, 1/3 without
-            # --rr='rr record --wait': fixed mode for all rounds
+            # --rr (auto): rr always on, randomly pick options each round
+            # --rr='rr record --chaos --wait': fixed mode for all rounds
             # No --rr: never use rr
             rr_mode = False
             if args.rr:
                 if args.rr == 'auto':
-                    rr_mode = pick_rr_mode()  # random: 'rr record --wait', '--chaos --wait', or ''
-                    if rr_mode:
-                        logger.info(f"rr mode this round: {rr_mode}")
-                    else:
-                        logger.info("rr mode this round: OFF (native-aio coverage)")
-                        extra_args.append("--loose-innodb_use_native_aio=1")
+                    # rr always on, but randomize the options
+                    rr_mode = random.choice([
+                        'rr record --wait',
+                        'rr record --chaos --wait',
+                        'rr record --chaos',
+                    ])
+                    logger.info(f"rr mode this round: {rr_mode}")
                 else:
                     rr_mode = args.rr  # fixed mode for all rounds
 
@@ -1898,10 +1899,9 @@ Examples:
                              "from the InnoDB_standard.cc combinations matrix")
     parser.add_argument("--rr", type=str, nargs='?', const='auto', default=None,
                         help="Run mariadbd under rr. "
-                             "--rr (no value) = auto-randomize per round: 2/3 with rr, "
-                             "1/3 without (same as InnoDB_standard.cc). "
-                             "--rr='rr record --wait' = fixed rr mode for ALL rounds. "
-                             "--rr='rr record --chaos --wait' = chaos mode for ALL rounds. "
+                             "--rr (no value) = rr always on, randomly picks between "
+                             "--wait, --chaos --wait, --chaos each round. "
+                             "--rr='rr record --chaos --wait' = fixed mode for ALL rounds. "
                              "On crash, rr trace is saved to crashes/ for 'rr replay'.")
     parser.add_argument("--fast-dir", type=str, default="/dev/shm/db_killer",
                         help="Fast (tmpfs/RAM) directory for server datadir. "
