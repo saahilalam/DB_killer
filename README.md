@@ -192,6 +192,12 @@ When rr is active, the following mysqld options are auto-added (per InnoDB_stand
 
 Following the RQG `local.cfg` convention, runs can alternate between RAM-based (tmpfs) and disk-based (ext4) directories. This covers different filesystem code paths in InnoDB.
 
+**Quick setup** — creates both dirs (ext4-on-tmpfs, same approach as RQG):
+```bash
+sudo -E bash setup_dirs.sh          # creates /dev/shm/db_killer + /dev/shm/db_killer_ext4
+sudo -E bash setup_dirs.sh teardown  # clean up when done
+```
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--fast-dir` | `/dev/shm/db_killer` | RAM-based directory (tmpfs). Higher I/O throughput, better for finding bugs. |
