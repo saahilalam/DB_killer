@@ -345,11 +345,44 @@ INJECT_SUBQUERY = 50       # 1/50 chance to wrap in subquery
 
 ### Known bugs file
 
-`known_bugs.strings` lists crash signatures to skip (one per line). Substring matching, case-insensitive:
+`known_bugs.strings` lists crash signatures to skip (one per line). Substring matching, case-insensitive. Once a bug is filed upstream, add its signature here so future runs auto-skip it.
 
+**Workflow after filing a bug (e.g. MDEV-XXXXX):**
+
+1. Get the crash signature from the `.sig` file:
+   ```bash
+   cat crashes/crash_0008.sig
+   ```
+   Example output:
+   ```
+   # Tag: SIGABRT___pthread_kill_internal
+   backup_stage <= BACKUP_WAIT_FOR_FLUSH || backup_stage >= BACKUP_END|SIGABRT|__pthread_kill_internal|backup_log_ddl|mysql_create_or_drop_trigger
+   ```
+
+2. Append a substring of the signature to `known_bugs.strings` with your bug ID:
+   ```bash
+   echo "backup_stage <= BACKUP_WAIT_FOR_FLUSH|SIGABRT|backup_log_ddl  ## MDEV-XXXXX" >> known_bugs.strings
+   ```
+
+   A short, distinctive substring is enough — matching uses fixed-string substring (like `grep -F`).
+
+3. On the next run, the fuzzer will auto-skip matching crashes:
+   ```
+   CRASH #N is a KNOWN BUG — deleting
+     Signature: backup_stage <= BACKUP_WAIT_FOR_FLUSH...
+   ```
+
+**Tip:** After every run, `crashes/seen_signatures.strings` contains a copy-paste-ready list of all unique signatures seen in that run. Use it for bulk updates:
+```bash
+cat crashes/seen_signatures.strings >> known_bugs.strings
 ```
-row0merge.cc:771
-backup_log_ddl|mysql_create_or_drop_trigger
+
+Example `known_bugs.strings`:
+```
+# Format: SIGNATURE  ## MDEV-XXXXX or comment
+row0merge.cc:771|row_merge_buf_add                     ## MDEV-12345
+backup_log_ddl|mysql_create_or_drop_trigger            ## MDEV-67890
+!(col->prtype & 256U)|SIGABRT|row_merge_buf_add        ## MDEV-11111
 ```
 
 ## Tips for effective fuzzing
