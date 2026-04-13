@@ -16,3 +16,4 @@
 #
 !(col->prtype & 256U)|SIGABRT|row_merge_buf_add|row_merge_read_clustered_index|row_merge_build_indexes|ha_innobase::inplace_alter_table ## MDEV-39309
 !((col->prtype ^ prtype) & ~(16384U|32768U))|SIGABRT|__pthread_kill_internal|innobase_rename_or_enlarge_column_try|innobase_rename_or_enlarge_columns_try|commit_try_norebuild ## MDEV-39317
+fts_id_index->fields[1].col->vers_sys_end()|SIGABRT|__pthread_kill_internal|fts_add_doc_by_id|fts_add|fts_commit_table ## MDEV-34982
