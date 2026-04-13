@@ -14,3 +14,4 @@
 #   SIGSEGV|Field::check_assignability_from|Item::check_assignability_to  ## MDEV-34780
 #   m_status == DA_ERROR|SIGABRT|THD::raise_condition  ## assertion crash
 #
+!(col->prtype & 256U)|SIGABRT|row_merge_buf_add|row_merge_read_clustered_index|row_merge_build_indexes|ha_innobase::inplace_alter_table ## MDEV-39309
