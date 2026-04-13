@@ -1273,6 +1273,32 @@ def run_basedir(args):
                         sf.write(f"# Crash signature (pquery-compatible)\n")
                         sf.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                         sf.write(f"# Tag: {short_tag}\n")
+                        sf.write(f"# Basedir: {server.basedir}\n")
+                        # Extract MariaDB version + source commit from mariadbd
+                        try:
+                            ver = subprocess.run(
+                                [server.mysqld, '--version'],
+                                capture_output=True, text=True, timeout=10)
+                            ver_line = ver.stdout.strip().split('\n')[0]
+                            if ver_line:
+                                sf.write(f"# Version: {ver_line}\n")
+                        except Exception:
+                            pass
+                        # Try to get source commit from basedir (if it's a git repo)
+                        try:
+                            commit = subprocess.run(
+                                ['git', '-C', server.basedir, 'rev-parse', 'HEAD'],
+                                capture_output=True, text=True, timeout=5)
+                            if commit.returncode == 0 and commit.stdout.strip():
+                                sf.write(f"# Commit: {commit.stdout.strip()}\n")
+                            branch = subprocess.run(
+                                ['git', '-C', server.basedir, 'rev-parse',
+                                 '--abbrev-ref', 'HEAD'],
+                                capture_output=True, text=True, timeout=5)
+                            if branch.returncode == 0 and branch.stdout.strip():
+                                sf.write(f"# Branch: {branch.stdout.strip()}\n")
+                        except Exception:
+                            pass
                         sf.write(f"{signature}\n")
 
                     # Save full GDB backtrace separately
