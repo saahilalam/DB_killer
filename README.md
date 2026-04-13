@@ -263,10 +263,28 @@ This eliminates the "sporadic crash" problem entirely — every rr-traced crash 
 ```bash
 # Run the repro script (optionally override basedir)
 bash crashes/crash_0001.sh /path/to/mariadb-debug-build
+```
 
-# Or reduce with pquery's reducer
-./prep_reducer.sh /path/to/mariadb-debug-build crashes/crash_0001
-bash crashes/crash_0001_reducer.sh
+### Reducing a crash
+
+Run `reduce_crash.sh` — it auto-extracts the signature from `crash_NNNN.sig` and runs pquery's reducer with the correct options from `crash_NNNN.opt`:
+
+```bash
+# Single command — auto-finds signature + opts from .sig and .opt files
+bash reduce_crash.sh /path/to/mariadb-debug-build crashes/crash_0001
+
+# With extra mysqld opts (merged with .opt file content)
+bash reduce_crash.sh /path/to/mariadb-debug-build crashes/crash_0001 "--sql_mode= --innodb-page-size=64K"
+```
+
+This calls `reducer_new_text_string_pquery.sh` from your MariaDB build dir (installed by mariadb-qa's `startup.sh`). It will reduce the 30K-line SQL file down to the minimal set of queries that trigger the crash.
+
+You can also use the underlying reducer directly:
+
+```bash
+cd /path/to/mariadb-debug-build
+./reducer_new_text_string_pquery.sh /path/to/crash_0001.sql \
+    "$(grep -v '^#' crash_0001.sig | head -1)" "--sql_mode="
 ```
 
 ### Crash signatures
