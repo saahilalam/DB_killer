@@ -465,12 +465,16 @@ def _is_known_or_seen(signature, known_sigs, seen_sigs):
 
 def _delete_crash_files(crash_prefix, crash_vardir):
     """Remove all files for a duplicate/known crash."""
-    for ext in ('.sql', '.opt', '.cnf', '.sh', '.sig'):
+    for ext in ('.sql', '.opt', '.cnf', '.sh', '.sig', '.bt'):
         path = crash_prefix + ext
         if os.path.exists(path):
             os.remove(path)
     if os.path.isdir(crash_vardir):
         shutil.rmtree(crash_vardir, ignore_errors=True)
+    # Also remove the rr trace directory
+    rr_dir = crash_prefix + '_rr'
+    if os.path.isdir(rr_dir):
+        shutil.rmtree(rr_dir, ignore_errors=True)
 
 
 def setup_logging(verbose):
