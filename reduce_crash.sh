@@ -50,10 +50,16 @@ if [ ! -d "$BASEDIR" ]; then
 fi
 
 # Find the reducer script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REDUCER=""
 for candidate in \
     "$BASEDIR/reducer_new_text_string_pquery.sh" \
-    "$BASEDIR/reducer_new_text_string.sh"; do
+    "$BASEDIR/reducer_new_text_string.sh" \
+    "$SCRIPT_DIR/mariadb-qa/reducer_new_text_string_pquery.sh" \
+    "$SCRIPT_DIR/mariadb-qa/reducer_new_text_string.sh" \
+    "$SCRIPT_DIR/mariadb-qa/reducer.sh" \
+    "$SCRIPT_DIR/../mariadb-qa/reducer.sh" \
+    "$HOME/mariadb-qa/reducer.sh"; do
     if [ -x "$candidate" ]; then
         REDUCER="$candidate"
         break
@@ -61,9 +67,16 @@ for candidate in \
 done
 
 if [ -z "$REDUCER" ]; then
-    echo "ERROR: No reducer script found in $BASEDIR"
-    echo "Expected: reducer_new_text_string_pquery.sh or reducer_new_text_string.sh"
-    echo "These are usually copied by mariadb-qa's startup.sh"
+    echo "ERROR: No reducer script found."
+    echo "Looked in:"
+    echo "  $BASEDIR/reducer_new_text_string_pquery.sh"
+    echo "  $BASEDIR/reducer_new_text_string.sh"
+    echo "  $SCRIPT_DIR/mariadb-qa/reducer*.sh"
+    echo "  $HOME/mariadb-qa/reducer.sh"
+    echo ""
+    echo "Fix: run mariadb-qa's startup.sh in your build dir:"
+    echo "  cd $BASEDIR && bash ~/mariadb-qa/startup.sh"
+    echo "This copies the reducer scripts into the build dir."
     exit 1
 fi
 
