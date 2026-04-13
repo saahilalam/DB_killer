@@ -464,14 +464,22 @@ def _is_known_or_seen(signature, known_sigs, seen_sigs):
 
 
 def _delete_crash_files(crash_prefix, crash_vardir):
-    """Remove all files for a duplicate/known crash."""
+    """Remove all files for a duplicate/known crash.
+
+    With the new layout, everything (sql/opt/sig/bt/sh/vardir/rr)
+    lives in a single crash directory — just remove it.
+    """
+    crash_test_dir = os.path.dirname(crash_prefix)
+    if os.path.isdir(crash_test_dir) and os.path.basename(crash_test_dir).startswith('crash_'):
+        shutil.rmtree(crash_test_dir, ignore_errors=True)
+        return
+    # Legacy layout fallback (flat files at crash_prefix)
     for ext in ('.sql', '.opt', '.cnf', '.sh', '.sig', '.bt'):
         path = crash_prefix + ext
         if os.path.exists(path):
             os.remove(path)
     if os.path.isdir(crash_vardir):
         shutil.rmtree(crash_vardir, ignore_errors=True)
-    # Also remove the rr trace directory
     rr_dir = crash_prefix + '_rr'
     if os.path.isdir(rr_dir):
         shutil.rmtree(rr_dir, ignore_errors=True)
@@ -1150,17 +1158,19 @@ def run_basedir(args):
                 else:
                     logger.warning(f"CRASH detected (server not alive)")
 
-                # Preserve vardir
-                crash_vardir = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_vardir")
+                # Each crash gets its OWN directory — all files inside
+                crash_name = f"crash_{crash_count:04d}"
+                crash_test_dir = os.path.join(args.crash_dir, crash_name)
+                os.makedirs(crash_test_dir, exist_ok=True)
+                # Prefix for .sql/.opt/.sig/.bt/.sh — inside the crash dir
+                crash_prefix = os.path.join(crash_test_dir, crash_name)
+
+                # Preserve vardir inside the crash dir
+                crash_vardir = os.path.join(crash_test_dir, 'vardir')
                 _preserve_vardir(server, crash_vardir, crash_info)
 
-                # Save rr trace if enabled
-                # With _RR_TRACE_DIR, rr creates the standard structure:
-                #   rr_trace/mariadbd-0, mariadbd-1, latest-trace, cpu_lock
-                # We pack the latest trace (embeds binaries) then copy the
-                # whole directory — same format as RQG.
+                # Save rr trace inside the crash dir
                 if server.rr_trace and server.rr_trace_dir and os.path.isdir(server.rr_trace_dir):
-                    # Find latest trace to pack
                     latest = os.path.join(server.rr_trace_dir, 'latest-trace')
                     trace_to_pack = os.path.realpath(latest) if os.path.exists(latest) else None
                     if not trace_to_pack:
@@ -1170,13 +1180,11 @@ def run_basedir(args):
                                 trace_to_pack = candidate
                                 break
                     if trace_to_pack and os.path.isdir(trace_to_pack):
-                        rr_dest = os.path.join(args.crash_dir, f"crash_{crash_count:04d}_rr")
+                        rr_dest = os.path.join(crash_test_dir, 'rr')
                         try:
-                            # 'rr pack' embeds binaries for portable replay
                             subprocess.run(
                                 ['rr', 'pack', trace_to_pack],
                                 capture_output=True, timeout=120)
-                            # Copy the whole rr directory (mariadbd-0, latest-trace, cpu_lock)
                             shutil.copytree(server.rr_trace_dir, rr_dest,
                                             symlinks=True)
                             logger.info(f"  rr trace saved: {rr_dest}")
@@ -1187,7 +1195,6 @@ def run_basedir(args):
                         logger.warning(f"  rr trace not found in {server.rr_trace_dir}")
 
                 # The infile IS the reproducer — copy it directly
-                crash_prefix = os.path.join(args.crash_dir, f"crash_{crash_count:04d}")
                 crash_sql = crash_prefix + ".sql"
                 shutil.copy2(infile, crash_sql)
 
@@ -1251,14 +1258,38 @@ def run_basedir(args):
                     })
                 elif dedup_status == 'dup':
                     first_prefix = seen_sigs[signature]
-                    logger.info(f"CRASH #{crash_count} is a DUPLICATE of {os.path.basename(first_prefix)} — deleting")
-                    logger.info(f"  Signature: {signature}")
-                    _delete_crash_files(crash_prefix, crash_vardir)
+                    first_test_dir = os.path.dirname(first_prefix)
+
+                    # Smaller SQL = easier to reduce. If this new duplicate
+                    # is smaller, replace the entire original crash dir with
+                    # this one (keeps the smaller rr trace + smaller SQL).
+                    old_sql_size = os.path.getsize(first_prefix + '.sql') \
+                        if os.path.exists(first_prefix + '.sql') else float('inf')
+                    new_sql_size = os.path.getsize(crash_prefix + '.sql')
+
+                    if new_sql_size < old_sql_size:
+                        logger.info(f"CRASH #{crash_count} is a smaller DUPLICATE of "
+                                     f"{os.path.basename(first_test_dir)} "
+                                     f"({new_sql_size} < {old_sql_size} bytes) — "
+                                     f"replacing original")
+                        logger.info(f"  Signature: {signature}")
+                        # Remove old crash dir entirely, move new one in its place
+                        if os.path.isdir(first_test_dir):
+                            shutil.rmtree(first_test_dir, ignore_errors=True)
+                        shutil.move(crash_test_dir, first_test_dir)
+                        # seen_sigs still points to first_prefix which is correct
+                    else:
+                        logger.info(f"CRASH #{crash_count} is a DUPLICATE of "
+                                     f"{os.path.basename(first_test_dir)} "
+                                     f"(size {new_sql_size} >= {old_sql_size}) — deleting")
+                        logger.info(f"  Signature: {signature}")
+                        _delete_crash_files(crash_prefix, crash_vardir)
+
                     dup_crash_count += 1
                     crash_details.append({
                         'num': crash_count, 'status': 'duplicate',
                         'round': round_num,
-                        'duplicate_of': os.path.basename(first_prefix),
+                        'duplicate_of': os.path.basename(first_test_dir),
                         'signature': signature, 'tag': short_tag,
                         'query': crash_query, 'time': time.strftime('%Y-%m-%d %H:%M:%S'),
                         'prefix': crash_prefix, 'vardir': crash_vardir,

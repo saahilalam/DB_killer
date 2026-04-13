@@ -26,6 +26,18 @@ EXTRA_OPTS="${3:---sql_mode=}"
 
 # Strip .sql extension if user passed the full .sql filename
 CRASH_PREFIX="${CRASH_PREFIX%.sql}"
+# Strip trailing slash
+CRASH_PREFIX="${CRASH_PREFIX%/}"
+
+# Handle new layout: crashes/crash_0001/ (directory with files inside)
+# User may pass:
+#   crashes/crash_0001          — directory path (new layout)
+#   crashes/crash_0001/crash_0001 — explicit prefix (new layout)
+#   crashes/crash_0001          — legacy flat layout prefix
+if [ -d "$CRASH_PREFIX" ] && [ -f "$CRASH_PREFIX/$(basename $CRASH_PREFIX).sql" ]; then
+    # New layout: crashes/crash_0001/ → crashes/crash_0001/crash_0001
+    CRASH_PREFIX="$CRASH_PREFIX/$(basename $CRASH_PREFIX)"
+fi
 
 SQL_FILE="${CRASH_PREFIX}.sql"
 SIG_FILE="${CRASH_PREFIX}.sig"
