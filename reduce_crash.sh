@@ -138,8 +138,8 @@ echo ""
 
 # --- Run the reducer ---
 
-cd "$BASEDIR"
-
 SQL_FILE_ABS=$(readlink -f "$SQL_FILE")
+
+cd "$BASEDIR"
 
 "$REDUCER" "$SQL_FILE_ABS" "$SIGNATURE" "$EXTRA_OPTS"

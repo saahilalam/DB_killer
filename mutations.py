@@ -108,7 +108,7 @@ def _fuzz_string_literal(node):
         return exp.Literal.string(val + "\x00")
     elif action == 4:
         # Swap LIKE wildcards
-        return exp.Literal.string(val.replace("%", "_").replace("_", "%"))
+        return exp.Literal.string(val.translate(str.maketrans('%_', '_%')))
     elif action == 5:
         return exp.Literal.string(pick(BAD_DATES))
     elif action == 6:

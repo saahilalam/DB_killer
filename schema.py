@@ -199,8 +199,8 @@ class SchemaTracker:
                     nullable=(nullable == 'YES'),
                     has_default=(default is not None),
                     is_auto_inc=('auto_increment' in (extra or '')),
-                    is_virtual=('VIRTUAL' in (gen_expr or '').upper() if gen_expr else False),
-                    is_persistent=('STORED' in (extra or '').upper() or
+                    is_virtual=('VIRTUAL GENERATED' in (extra or '').upper()),
+                    is_persistent=('STORED GENERATED' in (extra or '').upper() or
                                    'PERSISTENT' in (extra or '').upper()),
                 )
                 tbl.add_column(col)
@@ -520,6 +520,9 @@ def build_schema_from_setup():
         tbl = Table(tdef['name'], engine='InnoDB', row_format=tdef['row_format'])
 
         for col_name, col_typedef in tdef['columns']:
+            # Skip composite PRIMARY KEY definitions (not a column)
+            if col_name.upper() == 'PRIMARY KEY':
+                continue
             upper = col_typedef.upper()
             # Parse basic type from typedef
             base_type = col_typedef.split('(')[0].split(' ')[0].upper()

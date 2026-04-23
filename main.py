@@ -19,13 +19,11 @@ Usage:
 
 import argparse
 import glob
-import hashlib
 import logging
 import os
 import random
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -653,6 +651,8 @@ def run_live(args):
     count = 0
     crash_count = 0
     error_count = 0
+    success_count = 0
+    fail_count = 0
     start_time = time.time()
     crash_details = []  # list of dicts with info for crash summary report
 
@@ -704,7 +704,7 @@ def run_live(args):
             sql = mutated_sql.strip().rstrip(';')
             count += 1
 
-            if args.max_queries and count > args.max_queries:
+            if args.max_queries and count >= args.max_queries:
                 break
 
             try:
@@ -715,6 +715,7 @@ def run_live(args):
                 except Exception:
                     pass
                 cursor.close()
+                success_count += 1
 
             except mysql.connector.Error as e:
                 errno = e.errno if hasattr(e, 'errno') else 0
@@ -1085,7 +1086,7 @@ def run_basedir(args):
                                 # the raw grammar output in pipeline 2.
                                 stmt = _sanitize_for_sqlglot(stmt)
                                 sql = fuzzer.fuzz_one(stmt)
-                    elif roll <= 45:
+                    elif 41 <= roll <= 45:
                         # Pipeline 4: malformed SQL — exercises parser
                         # error-handling paths in MariaDB (truncated
                         # queries, broken syntax, partial clauses).
@@ -1124,6 +1125,10 @@ def run_basedir(args):
             num_trials = args.trials
             replay_start = time.time()
             crashed_in_trial = False
+            trial = 0
+            shuffle = False
+            num_threads = 1
+            pquery_log_dir = os.path.join(server.tmpdir, "pquery_log_t1")
 
             for trial in range(1, num_trials + 1):
                 if crashed_in_trial:
@@ -1290,7 +1295,7 @@ def run_basedir(args):
                     for opt in mysqld_opts:
                         f.write(f"{opt}\n")
 
-                # Write .cnf file
+                # Write crash reproduction script (.sh)
                 _write_crash_repro_script(crash_prefix, server, crash_info, pquery_bin)
 
                 # Extract signature
@@ -1355,7 +1360,9 @@ def run_basedir(args):
                         if os.path.isdir(first_test_dir):
                             shutil.rmtree(first_test_dir, ignore_errors=True)
                         shutil.move(crash_test_dir, first_test_dir)
-                        # seen_sigs still points to first_prefix which is correct
+                        # Update seen_sigs to point to actual files inside moved dir
+                        new_prefix = os.path.join(first_test_dir, os.path.basename(crash_prefix))
+                        seen_sigs[signature] = new_prefix
                     else:
                         logger.info(f"CRASH #{crash_count} is a DUPLICATE of "
                                      f"{os.path.basename(first_test_dir)} "
@@ -1438,7 +1445,6 @@ def run_basedir(args):
                         'signal': crash_info.get('signal_name') if crash_info else None,
                         'reproducer': os.path.abspath(crash_sql),
                         'script': os.path.abspath(crash_prefix) + '.sh',
-                        'config': os.path.abspath(crash_prefix) + '.cnf',
                         'sig_file': os.path.abspath(crash_prefix) + '.sig',
                         'error_log': os.path.abspath(os.path.join(crash_vardir, 'error.log')),
                         'core_path': crash_info.get('core_path') if crash_info and crash_info.get('core_dump') else None,
@@ -1583,8 +1589,6 @@ def _write_crash_summary(crash_dir, crash_details, total_queries, total_crashes,
                         f.write(f"    Replay SQL: {c['replay_sql']}  (sourceable — exact execution order)\n")
                     if c.get('script'):
                         f.write(f"    Script    : {c['script']}\n")
-                    if c.get('config'):
-                        f.write(f"    Config    : {c['config']}\n")
                     if c.get('sig_file'):
                         f.write(f"    Sig file  : {c['sig_file']}\n")
                     if c.get('vardir'):

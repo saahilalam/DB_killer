@@ -33,17 +33,18 @@ def gen_value(col):
     if 'BIT' in dt:
         return f"b'{random.randint(0, 255):08b}'"
 
+    # Float/double/decimal BEFORE is_numeric — is_numeric matches these too
+    if any(t in dt for t in ['FLOAT', 'DOUBLE', 'DECIMAL']):
+        if chance(4):
+            return str(pick(BAD_FLOATS))
+        return str(round(random.uniform(-1000, 1000), 4))
+
     if col.is_numeric:
         if chance(4):
             # Use smaller bad integers to avoid overflow on TINYINT/SMALLINT
             safe_bad = [v for v in BAD_INTEGERS if -2147483648 <= v <= 2147483647]
             return str(pick(safe_bad))
         return str(random.randint(-1000, 1000))
-
-    if any(t in dt for t in ['FLOAT', 'DOUBLE', 'DECIMAL']):
-        if chance(4):
-            return str(pick(BAD_FLOATS))
-        return str(round(random.uniform(-1000, 1000), 4))
 
     if 'ENUM' in dt:
         return f"'{pick(['a','b','c','d','e'])}'"
@@ -70,9 +71,6 @@ def gen_value(col):
 
     if 'TIME' in dt:
         return f"'{random.randint(0,23):02d}:{random.randint(0,59):02d}:{random.randint(0,59):02d}'"
-
-    if 'BIT' in dt:
-        return f"b'{random.randint(0,255):08b}'"
 
     if 'BLOB' in dt or 'BINARY' in dt:
         return f"UNHEX('{random.randint(0,0xFFFFFFFF):08X}')"
@@ -632,26 +630,6 @@ def gen_truncate(schema):
 
 
 # ===================================================================
-# InnoDB-specific SET statements
-# ===================================================================
-
-def gen_innodb_set(schema):
-    """Generate SET statements for InnoDB variables."""
-    stmts = [
-        f"SET GLOBAL innodb_buffer_pool_size = {pick([5*1024*1024, 8*1024*1024, 16*1024*1024, 64*1024*1024, 256*1024*1024])}",
-        f"SET GLOBAL innodb_adaptive_hash_index = {pick(['ON', 'OFF'])}",
-        f"SET GLOBAL innodb_stats_persistent = {pick(['ON', 'OFF'])}",
-        f"SET SESSION innodb_lock_wait_timeout = {pick([1, 5, 10, 50, 100])}",
-        f"SET SESSION lock_wait_timeout = {pick([1, 10, 30, 86400])}",
-        "FLUSH TABLES",
-        "FLUSH TABLES WITH READ LOCK",
-        "UNLOCK TABLES",
-        "SET GLOBAL innodb_file_per_table = 1",
-        "SET GLOBAL innodb_file_per_table = 0",
-    ]
-    return pick(stmts)
-
-
 # ===================================================================
 # BACKUP STAGE (MariaDB specific)
 # ===================================================================
@@ -759,7 +737,7 @@ def gen_create_drop(schema):
         # CREATE TABLE LIKE
         tbl = schema.random_table()
         if tbl:
-            return f"CREATE TABLE IF NOT EXISTS {tname} LIKE {tbl.name} ENGINE=InnoDB"
+            return f"CREATE TABLE IF NOT EXISTS {tname} LIKE {tbl.name}"
         return "SELECT 1"
     else:
         # CREATE TABLE AS SELECT

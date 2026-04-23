@@ -179,6 +179,10 @@ def generate_create_tables_from_zz(zz_data, engine='InnoDB'):
             continue
 
         row_count = rows_list[i % len(rows_list)] if rows_list else 100
+        try:
+            row_count = int(row_count)
+        except (TypeError, ValueError):
+            row_count = 100
 
         # Build column definitions
         col_defs = []

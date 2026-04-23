@@ -38,7 +38,7 @@ echo "  Branch:  ${BRANCH:-unknown}"
 echo ""
 
 UPDATED=0
-for sig in "$CRASH_DIR"/crash_*.sig; do
+for sig in "$CRASH_DIR"/crash_*.sig "$CRASH_DIR"/crash_*/crash_*.sig; do
     [ -f "$sig" ] || continue
 
     # Skip if already has Basedir line

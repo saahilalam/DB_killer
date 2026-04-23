@@ -211,8 +211,7 @@ class Fuzzer:
             ast = fuzz_select(ast, self.pool)
             ast = fuzz_joins(ast, self.pool)
             ast = inject_subquery_in_select(ast, self.pool)
-            if chance(200):
-                ast = inject_union(ast, self.pool)
+            ast = inject_union(ast, self.pool)
 
         elif isinstance(ast, exp.Create):
             ast = fuzz_create_table(ast, self.pool)
@@ -261,7 +260,7 @@ class Fuzzer:
                 return replacement
 
         # Wrap expression in CASE
-        if isinstance(node, (exp.Column, exp.Literal, exp.Func)) and chance(Prob.WRAP_IN_CASE):
+        if isinstance(node, (exp.Column, exp.Literal, exp.Func)):
             node = wrap_in_case(node, self.pool)
 
         # Recurse into children
