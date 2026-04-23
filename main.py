@@ -1759,8 +1759,7 @@ def _write_crash_repro_script(crash_prefix, server, crash_info, pquery_bin=None)
             f.write(f"# Signal: {crash_info.get('signal_name')}\n")
         f.write("#\n")
         f.write(f"# Usage: bash {os.path.basename(sh_file)} [basedir]\n")
-        f.write("#\n")
-        f.write("set -e\n\n")
+        f.write("#\n\n")
 
         # Derive all paths from script location so it's portable
         f.write('SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n')
