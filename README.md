@@ -42,9 +42,22 @@ Built on the same principles as [ClickHouse's AST fuzzer](https://clickhouse.com
 | Pipeline | % | Source | Purpose |
 |----------|---|--------|---------|
 | Schema-aware generator | 55% | `generator.py` + `schema.py` | Valid SQL against live schema (~70% hit rate) |
-| RQG grammar expansion | 25% | `grammar.py` + 70+ `.yy` grammars | Complex query patterns from MariaDB's test suite |
+| RQG grammar expansion | 25% | `grammar.py` + 80+ `.yy` grammars | Complex query patterns from MariaDB's test suite |
 | Grammar + AST mutation | 15% | `grammar.py` + `fuzzer.py` | Grammar output mutated via sqlglot AST walker |
 | Malformed SQL | 5% | `main.py` | Truncated/shuffled/broken queries for parser stress |
+
+### Statement types generated
+
+The schema-aware generator produces 23 statement types, weighted toward operations that trigger InnoDB crashes:
+
+| Category | Types | Weight |
+|----------|-------|--------|
+| DML | SELECT, INSERT, UPDATE, DELETE, REPLACE, multi-table ops | ~47% |
+| DDL | ALTER TABLE (20 variants), exotic DDL, CREATE/DROP, RENAME | ~22% |
+| Transactions | BEGIN, COMMIT, ROLLBACK, SAVEPOINT, XA START/PREPARE/COMMIT | ~11% |
+| InnoDB stress | SET innodb variables, FLUSH TABLES, buffer pool dump/load | ~5% |
+| Table ops | LOCK TABLES, TRUNCATE, OPTIMIZE, CHECK, REPAIR, IMPORT/EXPORT | ~9% |
+| Features | Partitions, system versioning, FTS, encryption, sequences, HANDLER, BACKUP STAGE | ~6% |
 
 ## Prerequisites
 
@@ -98,14 +111,14 @@ DB_killer/
 ├── mariadb-qa/           # pquery + reducer (cloned)
 │   ├── pquery/pquery2-md
 │   └── reducer.sh
-├── grammars/             # 70+ RQG .yy grammar files
+├── grammars/             # 80+ RQG .yy grammar files
 │   ├── modules/
 │   └── zz/              # .zz gendata files
-├── seeds/                # 12K+ seed SQL statements
+├── seeds/                # 57K+ seed SQL statements
 │   ├── innodb_basic.sql          # Core InnoDB operations
 │   ├── innodb_stress.sql         # Boundary values and edge cases
 │   ├── rqg_innodb_patterns.sql   # RQG-derived patterns
-│   ├── pquery_patterns.sql       # Harvested from pquery SQL collections
+│   ├── pquery_patterns.sql       # 49K patterns from all pquery SQL collections
 │   └── mariadb_test_patterns.sql # Harvested from MariaDB mysql-test suite
 ├── crashes/              # Crash output (created at runtime)
 ├── main.py               # CLI entry point
@@ -115,15 +128,15 @@ DB_killer/
 
 ### Seed files
 
-The fuzzer ships with **12,000+ seed SQL statements** harvested from multiple sources for maximum diversity:
+The fuzzer ships with **57,000+ seed SQL statements** harvested from multiple sources for maximum diversity:
 
 | File | Lines | Source |
 |------|-------|--------|
 | `innodb_basic.sql` | 103 | Hand-written InnoDB DDL/DML basics |
 | `innodb_stress.sql` | 117 | Boundary values, edge cases, type limits |
 | `rqg_innodb_patterns.sql` | 1,013 | Patterns derived from RQG grammar expansion |
-| `pquery_patterns.sql` | 4,039 | Harvested from [mariadb-qa](https://github.com/mariadb-corporation/mariadb-qa) pquery SQL collections (main-ms-ps-md.sql, 11.3.sql, bugs_sql.sql, encryption_and_vault.sql) |
-| `mariadb_test_patterns.sql` | 6,876 | Harvested from MariaDB's `mysql-test` suite (innodb, encryption, partitions, generated columns, versioning, FTS, JSON) |
+| `pquery_patterns.sql` | 49,044 | Deduplicated from all 15 [mariadb-qa](https://github.com/mariadb-corporation/mariadb-qa) pquery SQL collections (7.5M lines, filtered for InnoDB, engines rewritten, sampled for diversity) |
+| `mariadb_test_patterns.sql` | 6,880 | Harvested from MariaDB's `mysql-test` suite (innodb, encryption, partitions, generated columns, versioning, FTS, JSON) |
 
 The AST fuzzer parses these into ASTs, collects fragments (columns, literals, predicates, table structures), and cross-pollinates them across mutations. More diverse seeds = more diverse mutations = more bugs found.
 
@@ -149,10 +162,10 @@ python3 main.py \
 
 That's it. The fuzzer will:
 1. Initialize a fresh MariaDB datadir (alternating between fast/slow dirs)
-2. Start the server with randomized InnoDB options
+2. Start the server with randomized InnoDB options (including encryption, force_recovery)
 3. Randomly run under `rr record` (~2/3 of rounds) or without (~1/3 for native-aio coverage)
 4. Create 14 test tables with diverse schemas
-5. Generate ~30K+ fuzzed queries per round
+5. Generate ~30K+ fuzzed queries per round (DML, DDL, XA, FTS, encryption, HANDLER, sequences)
 6. Replay via pquery (multiple trials per round: sequential + shuffled)
 7. Detect crashes, extract GDB backtraces, save rr traces, deduplicate by signature
 8. Save everything to `./crashes/`
@@ -220,25 +233,33 @@ sudo -E bash setup_dirs.sh teardown  # clean up when done
 | `--known-bugs` | `known_bugs.strings` | File with known bug signatures to skip |
 | `--no-transactions` | off | Don't inject transaction statements |
 | `--no-alters` | off | Don't inject ALTER TABLE statements |
+| `--multi-threaded` | off | Multi-threaded pquery replay (random 1-33 threads per trial) |
 | `-v` | off | Verbose debug logging |
 
 ## Crash Output
 
-Each crash produces:
+Each crash gets its own directory with all artifacts:
 
 ```
 crashes/
-├── crash_0001.sql        # Full SQL reproducer (CREATE + INSERT + fuzzed queries)
-├── crash_0001.opt        # mysqld startup options used
-├── crash_0001.sig        # Crash signature (pquery-compatible format)
-├── crash_0001.bt         # Full GDB backtrace (set print addr off; bt)
-├── crash_0001.sh         # One-click repro script
-├── crash_0001_reducer.sh # Pre-configured pquery reducer wrapper
-├── crash_0001_rr/        # rr trace (when --rr enabled)
-├── crash_0001_vardir/    # Server data directory snapshot
-│   ├── data/             # InnoDB datadir + core dump
-│   └── error.log         # MariaDB error log with crash details
-└── crash_0001_repro/     # Reproduction working directory
+└── crash_0001/
+    ├── crash_0001.sql          # Full SQL reproducer (setup + fuzzed queries)
+    ├── crash_0001.replay.sql   # pquery execution log as clean SQL (single-threaded only)
+    ├── crash_0001.opt          # mysqld startup options used
+    ├── crash_0001.sig          # Crash signature (pquery-compatible format)
+    ├── crash_0001.bt           # Full GDB backtrace (set print addr off; bt)
+    ├── crash_0001.sh           # One-click repro script (tries pquery, falls back to mariadb client)
+    ├── rr/                     # rr trace directory (when --rr enabled)
+    │   ├── mariadbd-0/
+    │   └── latest-trace -> mariadbd-0
+    └── vardir/                 # Server data directory snapshot
+        ├── data/               # InnoDB datadir + core dump
+        └── error.log           # MariaDB error log with crash details
+```
+
+**`.replay.sql`** — For single-threaded sequential crashes, this file contains the exact queries pquery executed (in order, including errors), stripped of pquery metadata. Directly sourceable:
+```bash
+mariadb --force test < crashes/crash_0001/crash_0001.replay.sql
 ```
 
 ### Replaying an rr trace
@@ -247,7 +268,7 @@ When a crash has an rr trace, you can replay the exact execution deterministical
 
 ```bash
 # Replay in GDB — step forwards AND backwards through the crash
-rr replay crashes/crash_0001_rr
+rr replay crashes/crash_0001/rr/mariadbd-0/
 
 # Inside rr/gdb:
 (rr) continue          # run to the crash point
@@ -260,9 +281,11 @@ This eliminates the "sporadic crash" problem entirely — every rr-traced crash 
 
 ### Reproducing a crash
 
+The `.sh` script tries pquery first (matches the original fuzzing execution speed and behavior), then falls back to the mariadb client:
+
 ```bash
 # Run the repro script (optionally override basedir)
-bash crashes/crash_0001.sh /path/to/mariadb-debug-build
+bash crashes/crash_0001/crash_0001.sh /path/to/mariadb-debug-build
 ```
 
 ### Reducing a crash
@@ -305,7 +328,7 @@ Known bugs can be listed in `known_bugs.strings` (one signature substring per li
 
 ### InnoDB option randomization
 
-Each round picks random values for 17 InnoDB configuration axes (modeled after MariaDB's `InnoDB_standard.cc` test matrix):
+Each round picks random values for 19 InnoDB configuration axes (modeled after MariaDB's `InnoDB_standard.cc` test matrix):
 
 - `innodb_page_size` (4K, 8K, 16K, 32K, 64K)
 - `innodb_file_per_table` (on/off)
@@ -315,16 +338,19 @@ Each round picks random values for 17 InnoDB configuration axes (modeled after M
 - `innodb_random_read_ahead` (on/off)
 - `innodb_undo_log_truncate` (on/off)
 - `innodb_rollback_on_timeout` (on/off)
+- `innodb_encrypt_tables` (off/on/force) with `file_key_management` plugin
+- `innodb_force_recovery` (0/1/2) — exercises recovery code paths
 - `sql_mode` (traditional, strict, permissive variants)
 - And more (see `server.py`)
 
 ### RQG grammar expansion
 
-The fuzzer includes a Python reimplementation of the RQG `.yy` grammar expansion engine. It loads 70+ grammars sourced from [mleich1/rqg](https://github.com/mleich1/rqg) (the actively maintained RQG fork used by MariaDB QA) and expands them with:
+The fuzzer includes a Python reimplementation of the RQG `.yy` grammar expansion engine. It loads 80+ grammars sourced from [mleich1/rqg](https://github.com/mleich1/rqg) (the actively maintained RQG fork used by MariaDB QA) and expands them with:
 
 - Live schema resolution (`_table`, `_field`, `_field_int`, etc. resolve against actual tables)
 - Randomized fallbacks for Perl-only rules (rules that use `$prng` in the original RQG)
 - Base + redefine grammar combination (same as `InnoDB_standard.cc`)
+- 16 base grammars + 32 redefine grammars (debug injection, I/O thread variation, purge thread stress, log archive, encryption, triggers, random keys, session vars)
 
 ### AST mutations
 
@@ -335,6 +361,7 @@ Queries parsed by [sqlglot](https://github.com/tobymao/sqlglot) get AST-level mu
 - **JOIN mutations**: change join types, add/remove joins, synthetic ON conditions
 - **Function swapping**: 40+ equivalence groups (COUNT <-> SUM, UPPER <-> LOWER, etc.)
 - **Subquery injection**: wrap expressions in scalar subqueries
+- **UNION/EXCEPT/INTERSECT injection**: combine queries with set operations
 - **CASE wrapping**: wrap columns/literals in CASE WHEN ... IS NULL
 - **Fragment cross-pollination**: columns, literals, and predicates from one query substituted into another
 
@@ -342,11 +369,12 @@ Queries parsed by [sqlglot](https://github.com/tobymao/sqlglot) get AST-level mu
 
 `generator.py` generates valid SQL against the live `INFORMATION_SCHEMA`:
 
-- SELECT with random JOINs, subqueries, window functions
-- INSERT/REPLACE with boundary values
-- UPDATE/DELETE with generated WHERE clauses
-- ALTER TABLE (ADD/DROP/MODIFY columns, ADD/DROP indexes, ALGORITHM/LOCK hints)
-- DDL (CREATE/DROP tables, views, triggers, procedures)
+- **DML**: SELECT (JOINs, subqueries, aggregates), INSERT/REPLACE, UPDATE (self-referencing), DELETE, multi-table operations
+- **DDL**: ALTER TABLE (20 variants with ALGORITHM/LOCK hints), CREATE/DROP tables, RENAME TABLE
+- **Transactions**: BEGIN, COMMIT, ROLLBACK, SAVEPOINT, XA START/END/PREPARE/COMMIT/ROLLBACK/RECOVER
+- **InnoDB features**: HANDLER open/read/close, fulltext search (MATCH...AGAINST), encryption DDL, sequences, partitions, system versioning, IMPORT/EXPORT tablespace
+- **Maintenance**: OPTIMIZE, ANALYZE, CHECK, REPAIR, BACKUP STAGE, LOCK TABLES, TRUNCATE
+- **InnoDB stress**: runtime toggling of buffer pool size, adaptive hash index, encryption threads, fast shutdown, FLUSH TABLES
 
 ## Configuration
 
@@ -356,9 +384,10 @@ All probability constants are in `config.py` (`Prob` class). Lower N = more freq
 
 ```python
 REPLACE_WITH_NULL = 20     # 1/20 chance any literal becomes NULL
-TOGGLE_DISTINCT = 15       # 1/15 chance to toggle DISTINCT
-ADD_WHERE = 8              # 1/8 chance to add a WHERE clause
-INJECT_SUBQUERY = 50       # 1/50 chance to wrap in subquery
+TOGGLE_DISTINCT = 50       # 1/50 chance to toggle DISTINCT
+ADD_WHERE = 50             # 1/50 chance to add a WHERE clause
+INJECT_UNION = 200         # 1/200 chance to inject UNION
+ADD_SAVEPOINT = 50         # 1/50 chance to inject savepoint ops
 ```
 
 ### Known bugs file
@@ -369,7 +398,7 @@ INJECT_SUBQUERY = 50       # 1/50 chance to wrap in subquery
 
 1. Get the crash signature from the `.sig` file:
    ```bash
-   cat crashes/crash_0008.sig
+   cat crashes/crash_0008/crash_0008.sig
    ```
    Example output:
    ```
@@ -414,6 +443,7 @@ backup_log_ddl|mysql_create_or_drop_trigger            ## MDEV-67890
 7. **Check the `.bt` files** — full GDB backtraces are saved automatically for every crash
 8. **Feed crash queries back as seeds** — add reduced crash queries to `seeds/` for the next run
 9. **Use `rr replay`** to debug crashes — step backwards from the crash point to find root causes
+10. **Use `--multi-threaded`** — enables random thread counts (1-33) per trial, triggers concurrency bugs that single-threaded replay cannot
 
 ## License
 
