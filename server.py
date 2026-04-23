@@ -149,16 +149,11 @@ INNODB_COMBINATIONS = [
     #     "",
     #     "",
     # ],
-    # encryption — requires file_key_management plugin
+    # encryption — file_key_management plugin
+    # Key file path is replaced at runtime by _setup_encryption_keyfile()
     [
-        "--loose-plugin-load-add=file_key_management "
-        "--loose-file-key-management-filename=/dev/urandom "
-        "--loose-innodb_encrypt_tables=ON "
-        "--loose-innodb_encryption_threads=2",
-        "--loose-plugin-load-add=file_key_management "
-        "--loose-file-key-management-filename=/dev/urandom "
-        "--loose-innodb_encrypt_tables=FORCE "
-        "--loose-innodb_encryption_threads=4",
+        "ENCRYPTION=ON_2",
+        "ENCRYPTION=FORCE_4",
         "",
         "",
         "",
@@ -261,6 +256,36 @@ class MariaDBServer:
         # Cleanup on exit
         atexit.register(self._cleanup)
 
+    def _setup_encryption(self, placeholder):
+        """Create an encryption key file and return mysqld options.
+
+        file_key_management needs a key file with format:
+            1;hex_encoded_key
+        One key per line. Key IDs 1-33.
+        """
+        try:
+            keyfile = os.path.join(self.tmpdir, "encryption_keys.txt")
+            with open(keyfile, 'w') as f:
+                for key_id in range(1, 34):
+                    # 32-byte key = 64 hex chars
+                    key_hex = os.urandom(32).hex()
+                    f.write(f"{key_id};{key_hex}\n")
+
+            # Parse placeholder: "ENCRYPTION=ON_2" or "ENCRYPTION=FORCE_4"
+            parts = placeholder.split("=")[1].split("_")
+            mode = parts[0]       # ON or FORCE
+            threads = parts[1]    # 2 or 4
+
+            return [
+                "--loose-plugin-load-add=file_key_management",
+                f"--loose-file-key-management-filename={keyfile}",
+                f"--loose-innodb_encrypt_tables={mode}",
+                f"--loose-innodb_encryption_threads={threads}",
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to set up encryption: {e}")
+            return []
+
     def _find_free_port(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('', 0))
@@ -360,7 +385,17 @@ class MariaDBServer:
         ]
 
         if extra_args:
-            cmd.extend(extra_args)
+            # Expand encryption placeholders into real options with key file
+            expanded = []
+            for arg in extra_args:
+                if arg.startswith("ENCRYPTION="):
+                    enc_opts = self._setup_encryption(arg)
+                    if enc_opts:
+                        expanded.extend(enc_opts)
+                    # If setup fails, just skip encryption this round
+                else:
+                    expanded.append(arg)
+            cmd.extend(expanded)
 
         # Save the full startup options for testcase reproducibility
         self.startup_options = cmd[1:]  # skip the binary path
