@@ -54,8 +54,8 @@ class Prob:
     CHANGE_COMPRESSION = 30
 
     # Transaction mutations
-    ADD_SAVEPOINT = 100
-    TOGGLE_AUTOCOMMIT = 100
+    ADD_SAVEPOINT = 50
+    TOGGLE_AUTOCOMMIT = 50
 
     # Wrapping mutations
     WRAP_IN_SUBQUERY = 1500

@@ -899,8 +899,146 @@ def gen_innodb_set(schema):
         "SELECT * FROM INFORMATION_SCHEMA.INNODB_BUFFER_POOL_STATS",
         "SELECT * FROM INFORMATION_SCHEMA.INNODB_METRICS LIMIT 10",
         f"ANALYZE TABLE {schema.random_table_name() or 't1'}",
+        # Buffer pool dump/load — stresses warmup code paths under DDL
+        "SET GLOBAL innodb_buffer_pool_dump_now = ON",
+        "SET GLOBAL innodb_buffer_pool_load_now = ON",
     ]
     return pick(stmts)
+
+
+# ===================================================================
+# XA transactions — exercises prepare/recover/commit paths
+# ===================================================================
+
+def gen_xa_transaction(schema):
+    """Generate XA transaction statements — crash-prone in InnoDB."""
+    xid = f"'xid_fz_{random.randint(0, 999)}'"
+    ops = [
+        f"XA START {xid}",
+        f"XA END {xid}",
+        f"XA PREPARE {xid}",
+        f"XA COMMIT {xid}",
+        f"XA ROLLBACK {xid}",
+        "XA RECOVER",
+        f"XA COMMIT {xid} ONE PHASE",
+    ]
+    return pick(ops)
+
+
+# ===================================================================
+# HANDLER — cursor-level B-tree traversal (InnoDB-specific paths)
+# ===================================================================
+
+def gen_handler(schema):
+    """Generate HANDLER statements — exercises InnoDB cursor paths."""
+    tbl = schema.random_table()
+    if not tbl:
+        return None
+
+    alias = f"h_{random.randint(0, 99)}"
+    ops = [
+        f"HANDLER {tbl.name} OPEN AS {alias}",
+        f"HANDLER {alias} READ FIRST",
+        f"HANDLER {alias} READ NEXT",
+        f"HANDLER {alias} READ NEXT LIMIT {pick([1, 5, 10, 100])}",
+        f"HANDLER {alias} CLOSE",
+        # Direct index read
+        f"HANDLER {tbl.name} OPEN",
+        f"HANDLER {tbl.name} READ FIRST",
+        f"HANDLER {tbl.name} READ NEXT",
+        f"HANDLER {tbl.name} CLOSE",
+    ]
+    return pick(ops)
+
+
+# ===================================================================
+# Fulltext search — InnoDB FTS subsystem (fts0*.cc)
+# ===================================================================
+
+def gen_fulltext_search(schema):
+    """Generate FTS queries — exercises InnoDB's fulltext index subsystem."""
+    # Find tables with FT indexes or TEXT columns
+    ft_tables = [t for t in schema.tables.values()
+                 if any(i.fulltext for i in t.indexes)]
+    if not ft_tables:
+        # Fall back to any table with TEXT columns
+        ft_tables = [t for t in schema.tables.values()
+                     if any('TEXT' in c.data_type.upper() for c in t.columns)]
+    if not ft_tables:
+        return None
+
+    tbl = pick(ft_tables)
+    text_cols = [c for c in tbl.columns if 'TEXT' in c.data_type.upper()
+                 or 'VARCHAR' in c.data_type.upper() or 'CHAR' in c.data_type.upper()]
+    if not text_cols:
+        return None
+    col = pick(text_cols)
+
+    words = ['test', 'hello', 'world', 'foo', 'bar', 'data', 'innodb']
+    word = pick(words)
+
+    ops = [
+        f"SELECT * FROM {tbl.name} WHERE MATCH({col.name}) AGAINST('{word}')",
+        f"SELECT * FROM {tbl.name} WHERE MATCH({col.name}) AGAINST('+{word}' IN BOOLEAN MODE)",
+        f"SELECT * FROM {tbl.name} WHERE MATCH({col.name}) AGAINST('{word}' WITH QUERY EXPANSION)",
+        f"SELECT *, MATCH({col.name}) AGAINST('{word}') AS score FROM {tbl.name} ORDER BY score DESC LIMIT 10",
+        f"SELECT * FROM {tbl.name} WHERE MATCH({col.name}) AGAINST('+{word} -{pick(words)}' IN BOOLEAN MODE)",
+        # FTS index management
+        f"ALTER TABLE {tbl.name} ADD FULLTEXT INDEX IF NOT EXISTS ft_fz_{random.randint(0,99)} ({col.name})",
+        f"OPTIMIZE TABLE {tbl.name}",  # triggers FTS optimize
+        f"SET GLOBAL innodb_ft_aux_table = 'test/{tbl.name}'",
+        f"SELECT * FROM INFORMATION_SCHEMA.INNODB_FT_INDEX_TABLE LIMIT 10",
+        f"SELECT * FROM INFORMATION_SCHEMA.INNODB_FT_INDEX_CACHE LIMIT 10",
+    ]
+    return pick(ops)
+
+
+# ===================================================================
+# Encryption — InnoDB tablespace encryption
+# ===================================================================
+
+def gen_encryption(schema):
+    """Generate encryption-related DDL — exercises InnoDB encryption subsystem."""
+    tbl = schema.random_table()
+    if not tbl:
+        return None
+
+    key_id = random.randint(1, 33)
+    ops = [
+        f"ALTER TABLE {tbl.name} ENCRYPTED=YES ENCRYPTION_KEY_ID={key_id}",
+        f"ALTER TABLE {tbl.name} ENCRYPTED=NO",
+        f"ALTER TABLE {tbl.name} ENCRYPTED=YES",
+        f"ALTER TABLE {tbl.name} ENCRYPTED=DEFAULT",
+        f"SET GLOBAL innodb_encrypt_tables = {pick(['ON', 'OFF', 'FORCE'])}",
+        f"SET GLOBAL innodb_encryption_threads = {pick([0, 1, 2, 4])}",
+        f"SET GLOBAL innodb_encryption_rotate_key_age = {pick([0, 1, 2])}",
+        # Create encrypted table
+        f"CREATE TABLE IF NOT EXISTS fz_enc_{random.randint(0,99)} "
+        f"(id INT AUTO_INCREMENT PRIMARY KEY, c1 INT, c2 VARCHAR(200)) "
+        f"ENGINE=InnoDB ENCRYPTED=YES ENCRYPTION_KEY_ID={key_id}",
+        # Page compression + encryption together
+        f"ALTER TABLE {tbl.name} PAGE_COMPRESSED=1 ENCRYPTED=YES ENCRYPTION_KEY_ID={key_id}",
+    ]
+    return pick(ops)
+
+
+# ===================================================================
+# Sequences — MariaDB 10.3+ (own undo/redo paths)
+# ===================================================================
+
+def gen_sequence(schema):
+    """Generate sequence operations."""
+    seq_name = f"seq_fz_{random.randint(0, 99)}"
+    ops = [
+        f"CREATE SEQUENCE IF NOT EXISTS {seq_name} START WITH {random.randint(1, 1000)} INCREMENT BY {pick([1, -1, 2, 10])}",
+        f"SELECT NEXT VALUE FOR {seq_name}",
+        f"SELECT NEXT VALUE FOR {seq_name}",
+        f"SELECT SETVAL({seq_name}, {random.randint(1, 10000)})",
+        f"ALTER SEQUENCE {seq_name} RESTART",
+        f"ALTER SEQUENCE {seq_name} RESTART WITH {random.randint(1, 5000)}",
+        f"DROP SEQUENCE IF EXISTS {seq_name}",
+    ]
+    return pick(ops)
 
 
 # ===================================================================
@@ -908,24 +1046,29 @@ def gen_innodb_set(schema):
 # ===================================================================
 
 STATEMENT_GENERATORS = [
-    (gen_select,            25),   # SELECT
-    (gen_insert,            20),   # INSERT
-    (gen_update,            12),   # UPDATE
+    (gen_select,            15),   # SELECT (reduced — reads rarely crash InnoDB)
+    (gen_insert,            18),   # INSERT
+    (gen_update,            15),   # UPDATE (increased — stresses undo/locks)
     (gen_delete,             8),   # DELETE
-    (gen_alter_table,       10),   # ALTER TABLE (standard)
+    (gen_alter_table,       14),   # ALTER TABLE (increased — #1 InnoDB crash DDL)
     (gen_exotic_ddl,         8),   # FORCE, CHECKSUM, REPAIR, multi-ALTER
     (gen_partition_op,       5),   # Partition operations
     (gen_versioning_op,      3),   # System versioning
     (gen_create_drop,        4),   # CREATE/DROP table churn
     (gen_multi_table_op,     5),   # Multi-table UPDATE/DELETE/INSERT..SELECT
-    (gen_table_maintenance,  3),   # OPTIMIZE / ANALYZE / CHECK
-    (gen_transaction,        5),   # BEGIN / COMMIT / ROLLBACK
-    (gen_lock_tables,        1),   # LOCK TABLES
-    (gen_truncate,           1),   # TRUNCATE
-    (gen_innodb_set,         4),   # SET innodb variables, FLUSH, SHOW ENGINE
+    (gen_table_maintenance,  5),   # OPTIMIZE / ANALYZE / CHECK (increased)
+    (gen_transaction,       10),   # BEGIN / COMMIT / ROLLBACK (doubled)
+    (gen_lock_tables,        3),   # LOCK TABLES (increased — MDL contention)
+    (gen_truncate,           3),   # TRUNCATE (increased — tablespace reset)
+    (gen_innodb_set,         6),   # SET innodb variables, FLUSH, buffer pool
     (gen_backup_stage,       1),   # BACKUP STAGE
-    (gen_rename_table,       1),   # RENAME TABLE
-    (gen_import_export,      1),   # IMPORT/EXPORT tablespace
+    (gen_rename_table,       3),   # RENAME TABLE (increased — dict_sys stress)
+    (gen_import_export,      3),   # IMPORT/EXPORT tablespace (increased)
+    (gen_xa_transaction,     5),   # XA transactions (NEW — crash-prone)
+    (gen_handler,            3),   # HANDLER open/read/close (NEW — B-tree cursor)
+    (gen_fulltext_search,    3),   # FTS queries (NEW — fts0*.cc stress)
+    (gen_encryption,         3),   # Encryption DDL (NEW — encrypt/decrypt)
+    (gen_sequence,           2),   # Sequences (NEW — own undo/redo paths)
 ]
 
 _TOTAL_WEIGHT = sum(w for _, w in STATEMENT_GENERATORS)

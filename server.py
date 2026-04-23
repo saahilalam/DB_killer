@@ -149,6 +149,29 @@ INNODB_COMBINATIONS = [
     #     "",
     #     "",
     # ],
+    # encryption — requires file_key_management plugin
+    [
+        "--loose-plugin-load-add=file_key_management "
+        "--loose-file-key-management-filename=/dev/urandom "
+        "--loose-innodb_encrypt_tables=ON "
+        "--loose-innodb_encryption_threads=2",
+        "--loose-plugin-load-add=file_key_management "
+        "--loose-file-key-management-filename=/dev/urandom "
+        "--loose-innodb_encrypt_tables=FORCE "
+        "--loose-innodb_encryption_threads=4",
+        "",
+        "",
+        "",
+    ],
+    # innodb_force_recovery — recovery modes hit unique code paths
+    [
+        "",
+        "",
+        "",
+        "",
+        "--loose-innodb_force_recovery=1",
+        "--loose-innodb_force_recovery=2",
+    ],
 ]
 
 

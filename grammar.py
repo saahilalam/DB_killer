@@ -838,7 +838,6 @@ BASE_GRAMMARS = [
     'engine_stress.yy',
     'many_indexes.yy',
     'instant_add.yy',
-    'alter_online.yy',
     'fk_truncate.yy',
     'innodb_compression_encryption.yy',
 ]
@@ -861,11 +860,26 @@ REDEFINE_GRAMMARS = [
     'redefine_innodb_log_file_buffering.yy',
     'redefine_checks_off.yy',
     'xa.yy',
+    # InnoDB debug/stress redefines
+    'ts_dbug_innodb.yy',
+    'redefine_debug_debug.yy',
+    'redefine_innodb_log_archive.yy',
+    'redefine_innodb_io_threads_dynamic.yy',
+    'redefine_purge_thread_variation.yy',
+    'redefine_innodb_truncate_temporary_tablespace_flipper.yy',
+    'redefine_random_keys.yy',
+    'redefine_multiple_triggers.yy',
+    'redefine_file_buffering_write_through.yy',
+    'redefine_analyze_at_runtime.yy',
+    'redefine_read_only.yy',
+    'redefine_set_session_vars.yy',
     # modules/
     'modules/alter_table_columns.yy',
+    'modules/alter_table_indexes.yy',
     'modules/foreign_keys.yy',
     'modules/locks.yy',
     'modules/locks-10.4-extra.yy',
+    'modules/admin.yy',
 ]
 
 
