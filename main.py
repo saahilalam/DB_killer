@@ -485,6 +485,74 @@ def _delete_crash_files(crash_prefix, crash_vardir):
         shutil.rmtree(rr_dir, ignore_errors=True)
 
 
+def _save_pquery_replay_sql(pquery_log_dir, replay_sql_path, server, crash_info):
+    """Extract clean SQL from pquery execution log for direct replay.
+
+    pquery's --log-all-queries writes lines like:
+        SELECT 1;
+        # ERROR 1064 (42000) ...
+        INSERT INTO t1 ...;
+        # OK
+    or in some versions:
+        SELECT 1; # 1 (0.001s)
+        INSERT INTO t1 ...; # ERROR 1064
+
+    We extract only the SQL lines (skip # comments, strip trailing
+    result markers), producing a file that can be directly sourced:
+        mariadb --force test < crash_NNNN.replay.sql
+    """
+    try:
+        # Find the pquery log file(s) in the log dir
+        if not os.path.isdir(pquery_log_dir):
+            return
+
+        log_files = sorted(os.listdir(pquery_log_dir))
+        if not log_files:
+            return
+
+        # For single-threaded replay there's one log file
+        log_path = os.path.join(pquery_log_dir, log_files[0])
+        if not os.path.exists(log_path):
+            return
+
+        with open(log_path, 'r', errors='replace') as lf, \
+             open(replay_sql_path, 'w') as out:
+            out.write(f"-- DB_killer pquery replay log (sourceable SQL)\n")
+            out.write(f"-- {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            out.write(f"-- Build: {server.basedir}\n")
+            if crash_info and crash_info.get('signal_name'):
+                out.write(f"-- Signal: {crash_info.get('signal_name')}\n")
+            out.write(f"-- Replay: mariadb --force test < {os.path.basename(replay_sql_path)}\n")
+            out.write(f"--\n\n")
+
+            sql_count = 0
+            for line in lf:
+                line = line.rstrip('\n\r')
+
+                # Skip blank lines and pquery comment/status lines
+                if not line or line.startswith('#'):
+                    continue
+
+                # Strip trailing pquery result markers:
+                #   "SELECT 1; # OK"  or  "SELECT 1; # ERROR 1064 ..."
+                #   "SELECT 1; # 1 (0.003s)"
+                stripped = re.sub(r';\s*#\s*.*$', '', line).strip()
+                if not stripped:
+                    continue
+
+                # Ensure statement ends with semicolon
+                if not stripped.endswith(';'):
+                    stripped += ';'
+
+                out.write(stripped + '\n')
+                sql_count += 1
+
+            logger.info(f"  Saved {sql_count} executed queries to replay SQL")
+
+    except Exception as e:
+        logger.warning(f"  Failed to save pquery replay SQL: {e}")
+
+
 def setup_logging(verbose):
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -1198,6 +1266,16 @@ def run_basedir(args):
                 crash_sql = crash_prefix + ".sql"
                 shutil.copy2(infile, crash_sql)
 
+                # Save pquery execution log as clean, sourceable SQL.
+                # Only useful for single-threaded sequential replay (trial 1,
+                # no shuffle, 1 thread) — the execution order matches the file
+                # order, so you can directly: mariadb --force test < .replay.sql
+                if not shuffle and num_threads == 1:
+                    replay_sql = crash_prefix + ".replay.sql"
+                    _save_pquery_replay_sql(pquery_log_dir, replay_sql, server, crash_info)
+                    if os.path.exists(replay_sql):
+                        logger.info(f"  Replay SQL: {replay_sql}")
+
                 # Write .opt file
                 mysqld_opts = []
                 for opt in server.startup_options:
@@ -1348,7 +1426,8 @@ def run_basedir(args):
                                 bf.write(full_bt)
                             logger.info(f"  Full backtrace saved: {bt_file}")
 
-                    crash_details.append({
+                    replay_sql_path = os.path.abspath(crash_prefix + '.replay.sql')
+                    crash_detail = {
                         'num': crash_count, 'status': 'unique',
                         'round': round_num,
                         'unique_num': unique_crash_count,
@@ -1363,7 +1442,10 @@ def run_basedir(args):
                         'sig_file': os.path.abspath(crash_prefix) + '.sig',
                         'error_log': os.path.abspath(os.path.join(crash_vardir, 'error.log')),
                         'core_path': crash_info.get('core_path') if crash_info and crash_info.get('core_dump') else None,
-                    })
+                    }
+                    if os.path.exists(replay_sql_path):
+                        crash_detail['replay_sql'] = replay_sql_path
+                    crash_details.append(crash_detail)
 
                     logger.info("=" * 60)
                     logger.info(f"NEW UNIQUE CRASH #{unique_crash_count} (total #{crash_count}):")
@@ -1376,6 +1458,10 @@ def run_basedir(args):
                     logger.info(f"  Error log:  {crash_vardir}/error.log")
                     if crash_info and crash_info.get('core_dump'):
                         logger.info(f"  Core:       {crash_info.get('core_path')}")
+                    replay_file = crash_prefix + ".replay.sql"
+                    if os.path.exists(replay_file):
+                        logger.info(f"  Replay SQL: {replay_file}")
+                        logger.info(f"    (sourceable — exact pquery execution order)")
                     logger.info(f"  To reproduce:")
                     logger.info(f"    bash {crash_prefix}.sh")
                     logger.info(f"  Or with pquery directly:")
@@ -1493,6 +1579,8 @@ def _write_crash_summary(crash_dir, crash_details, total_queries, total_crashes,
                     f.write(f"    Tag       : {c['tag']}\n")
                     f.write(f"    Query     : {c['query']}\n")
                     f.write(f"    Reproducer: {c.get('reproducer', c['prefix'] + '.sql')}\n")
+                    if c.get('replay_sql'):
+                        f.write(f"    Replay SQL: {c['replay_sql']}  (sourceable — exact execution order)\n")
                     if c.get('script'):
                         f.write(f"    Script    : {c['script']}\n")
                     if c.get('config'):
@@ -1606,7 +1694,12 @@ def _write_crash_repro_script(crash_prefix, server, crash_info):
         f.write(f'SOCKET="$VARDIR/repro.sock"\n')
         f.write(f'ERROR_LOG="$VARDIR/error.log"\n')
         f.write(f'PID_FILE="$VARDIR/repro.pid"\n')
-        f.write(f'SQL_FILE="$SCRIPT_DIR/{crash_basename}.sql"\n')
+        f.write(f'# Prefer .replay.sql (pquery execution log, exact order) over .sql (generated input)\n')
+        f.write(f'if [ -f "$SCRIPT_DIR/{crash_basename}.replay.sql" ]; then\n')
+        f.write(f'    SQL_FILE="$SCRIPT_DIR/{crash_basename}.replay.sql"\n')
+        f.write(f'else\n')
+        f.write(f'    SQL_FILE="$SCRIPT_DIR/{crash_basename}.sql"\n')
+        f.write(f'fi\n')
         # Auto-detect binaries from BASEDIR
         f.write('MYSQLD="$BASEDIR/bin/mariadbd"\n')
         f.write('[ ! -x "$MYSQLD" ] && MYSQLD="$BASEDIR/bin/mysqld"\n')
