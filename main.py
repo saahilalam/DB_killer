@@ -1291,7 +1291,7 @@ def run_basedir(args):
                         f.write(f"{opt}\n")
 
                 # Write .cnf file
-                _write_crash_repro_script(crash_prefix, server, crash_info)
+                _write_crash_repro_script(crash_prefix, server, crash_info, pquery_bin)
 
                 # Extract signature
                 error_log = os.path.join(crash_vardir, "error.log")
@@ -1628,9 +1628,12 @@ def _write_crash_summary(crash_dir, crash_details, total_queries, total_crashes,
     logger.info(f"Crash summary written to {summary_path}")
 
 
-def _write_crash_repro_script(crash_prefix, server, crash_info):
+def _write_crash_repro_script(crash_prefix, server, crash_info, pquery_bin=None):
     """
     Write an executable .sh script with exact commands to reproduce the crash.
+
+    Replay strategy: try pquery first (matches original execution behavior),
+    fall back to mariadb client with --force if pquery is not available.
 
     Just run:  bash crash_0001.sh
     """
@@ -1657,6 +1660,9 @@ def _write_crash_repro_script(crash_prefix, server, crash_info):
         if not os.path.exists(install_db):
             # Try scripts/ directory
             install_db = os.path.join(server.basedir, "scripts", "mariadb-install-db")
+
+    # Resolve pquery path for the script
+    pquery_abs = os.path.abspath(pquery_bin) if pquery_bin else None
 
     # Collect mysqld options (non-path ones that affect behavior)
     mysqld_opts = []
@@ -1707,7 +1713,16 @@ def _write_crash_repro_script(crash_prefix, server, crash_info):
         f.write('[ ! -x "$CLIENT" ] && CLIENT="$BASEDIR/bin/mysql"\n')
         f.write('INSTALL_DB="$BASEDIR/scripts/mariadb-install-db"\n')
         f.write('[ ! -x "$INSTALL_DB" ] && INSTALL_DB="$BASEDIR/scripts/mysql_install_db"\n')
-        f.write('[ ! -x "$INSTALL_DB" ] && INSTALL_DB="$BASEDIR/bin/mariadb-install-db"\n\n')
+        f.write('[ ! -x "$INSTALL_DB" ] && INSTALL_DB="$BASEDIR/bin/mariadb-install-db"\n')
+
+        # Auto-detect pquery: check script dir, then common locations
+        f.write('# Auto-detect pquery binary\n')
+        f.write('PQUERY=""\n')
+        if pquery_abs:
+            f.write(f'[ -x "{pquery_abs}" ] && PQUERY="{pquery_abs}"\n')
+        f.write('[ -z "$PQUERY" ] && [ -x "$SCRIPT_DIR/../mariadb-qa/pquery/pquery2-md" ] && PQUERY="$SCRIPT_DIR/../mariadb-qa/pquery/pquery2-md"\n')
+        f.write('[ -z "$PQUERY" ] && [ -x "$HOME/mariadb-qa/pquery/pquery2-md" ] && PQUERY="$HOME/mariadb-qa/pquery/pquery2-md"\n')
+        f.write('[ -z "$PQUERY" ] && PQUERY=$(which pquery2-md 2>/dev/null || true)\n\n')
 
         # Step 1: Prepare vardir
         f.write("# Step 1: Prepare clean datadir\n")
@@ -1762,29 +1777,69 @@ def _write_crash_repro_script(crash_prefix, server, crash_info):
         f.write('    sleep 1\n')
         f.write('done\n\n')
 
-        # Step 4: Replay SQL using mariadb client with --force
-        # We use the mariadb CLI instead of pquery because pquery has a
-        # hardcoded 250-consecutive-failure limit that causes it to stop
-        # early on fuzzed SQL files (many invalid queries in a row).
-        # --force continues on all errors until the file is fully replayed.
+        # Step 4: Replay SQL
+        # Strategy: try pquery first (matches original fuzzing execution),
+        # then fall back to mariadb client.  pquery sends queries faster and
+        # doesn't wait for full result sets, which matches the timing under
+        # which the crash originally occurred.  The mariadb client is slower
+        # and may not hit the same InnoDB internal state.
         f.write("# Step 4: Replay SQL\n")
-        f.write(f'echo "=== Replaying $SQL_FILE ({os.path.basename(sql_file)}) ==="\n')
-        f.write(f'echo "  Total lines: $(wc -l < $SQL_FILE)"\n')
-        f.write('"$CLIENT" --socket="$SOCKET" --user=root --force --binary-mode test < "$SQL_FILE" 2>/dev/null || true\n\n')
+        f.write('NUM_LINES=$(wc -l < "$SQL_FILE")\n')
+        f.write('echo "=== Replaying $SQL_FILE ($NUM_LINES lines) ==="\n')
+        f.write('CRASHED=0\n\n')
 
-        # Step 5: Check if server is still alive
-        f.write("# Step 5: Check if server crashed\n")
-        f.write('sleep 1\n')
-        f.write('if kill -0 "$SERVER_PID" 2>/dev/null; then\n')
-        f.write('    if "$CLIENT" --socket="$SOCKET" --user=root -e "SELECT 1" &>/dev/null; then\n')
-        f.write('        echo ""\n')
-        f.write('        echo "Server is still alive — crash did NOT reproduce."\n')
-        f.write('        echo "Shutting down server..."\n')
-        f.write('        "$CLIENT" --socket="$SOCKET" --user=root -e "SHUTDOWN" 2>/dev/null || \\\n')
-        f.write('            kill "$SERVER_PID" 2>/dev/null\n')
+        # Try pquery first
+        f.write('if [ -n "$PQUERY" ] && [ -x "$PQUERY" ]; then\n')
+        f.write('    echo "  Method 1: pquery (matches original execution behavior)"\n')
+        f.write('    mkdir -p "$VARDIR/pquery_log"\n')
+        f.write('    "$PQUERY" \\\n')
+        f.write('        --infile="$SQL_FILE" \\\n')
+        f.write('        --socket="$SOCKET" \\\n')
+        f.write('        --user=root \\\n')
+        f.write('        --database=test \\\n')
+        f.write('        --threads=1 \\\n')
+        f.write('        --queries-per-thread="$NUM_LINES" \\\n')
+        f.write('        --logdir="$VARDIR/pquery_log" \\\n')
+        f.write('        --log-all-queries \\\n')
+        f.write('        --no-shuffle \\\n')
+        f.write('        2>/dev/null || true\n')
+        f.write('    sleep 1\n')
+        f.write('    if ! kill -0 "$SERVER_PID" 2>/dev/null; then\n')
+        f.write('        CRASHED=1\n')
         f.write('    fi\n')
-        f.write('fi\n')
-        f.write('wait "$SERVER_PID" 2>/dev/null\n\n')
+        f.write('fi\n\n')
+
+        # If pquery didn't crash it (or pquery not found), try mariadb client
+        f.write('if [ "$CRASHED" -eq 0 ] && kill -0 "$SERVER_PID" 2>/dev/null; then\n')
+        f.write('    if [ -n "$PQUERY" ]; then\n')
+        f.write('        echo "  pquery did not crash the server, trying mariadb client..."\n')
+        f.write('    else\n')
+        f.write('        echo "  pquery not found, using mariadb client"\n')
+        f.write('    fi\n')
+        f.write('    echo "  Method 2: mariadb client --force (slower, different timing)"\n')
+        f.write('    "$CLIENT" --socket="$SOCKET" --user=root --force --binary-mode test < "$SQL_FILE" 2>/dev/null || true\n')
+        f.write('    sleep 1\n')
+        f.write('    if ! kill -0 "$SERVER_PID" 2>/dev/null; then\n')
+        f.write('        CRASHED=1\n')
+        f.write('    fi\n')
+        f.write('fi\n\n')
+
+        # Step 5: Check result
+        f.write("# Step 5: Check if server crashed\n")
+        f.write('if [ "$CRASHED" -eq 1 ]; then\n')
+        f.write('    wait "$SERVER_PID" 2>/dev/null\n')
+        f.write('else\n')
+        f.write('    if kill -0 "$SERVER_PID" 2>/dev/null; then\n')
+        f.write('        if "$CLIENT" --socket="$SOCKET" --user=root -e "SELECT 1" &>/dev/null; then\n')
+        f.write('            echo ""\n')
+        f.write('            echo "Server is still alive — crash did NOT reproduce."\n')
+        f.write('            echo "Shutting down server..."\n')
+        f.write('            "$CLIENT" --socket="$SOCKET" --user=root -e "SHUTDOWN" 2>/dev/null || \\\n')
+        f.write('                kill "$SERVER_PID" 2>/dev/null\n')
+        f.write('        fi\n')
+        f.write('    fi\n')
+        f.write('    wait "$SERVER_PID" 2>/dev/null\n')
+        f.write('fi\n\n')
 
         # Step 6: Show error log
         f.write('if [ -f "$ERROR_LOG" ]; then\n')
