@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
 
 from fuzzer import Fuzzer
 
@@ -459,6 +460,60 @@ def _is_known_or_seen(signature, known_sigs, seen_sigs):
         return 'dup'
 
     return None
+
+
+def _generate_jira_urls(signature):
+    """Generate JIRA search URLs from a crash signature.
+
+    Mirrors pquery's ~/tt script: generates search URLs using the 3 most
+    significant stack frames and the assertion message so you can quickly
+    check if a crash is already filed at jira.mariadb.org.
+
+    Returns a list of (label, url) tuples.
+    """
+    urls = []
+    parts = signature.split('|')
+
+    # Extract assertion (first part, before SIGNAL, if it's not the signal itself)
+    assertion = ''
+    frames = []
+    for p in parts:
+        if p.startswith('SIG') or p.startswith('sig='):
+            continue
+        if not frames and p not in ('UNKNOWN',):
+            # First non-signal part is the assertion (if any)
+            if not assertion:
+                assertion = p
+                continue
+        frames.append(p)
+
+    # Use top 3 frames for the frames-based search
+    if len(frames) >= 3:
+        f1 = quote(frames[0])
+        f2 = quote(frames[1])
+        f3 = quote(frames[2])
+        url = (f'https://jira.mariadb.org/issues/?jql='
+               f'text%20~%20%22%5C%22{f1}%5C%22%22%20and%20'
+               f'text%20~%20%22%5C%22{f2}%5C%22%22%20and%20'
+               f'text%20~%20%22%5C%22{f3}%5C%22%22%20'
+               f'ORDER%20BY%20status%20ASC%2Cupdated%20DESC')
+        urls.append(('Search (3 frames)', url))
+    elif len(frames) >= 1:
+        f1 = quote(frames[0])
+        url = (f'https://jira.mariadb.org/issues/?jql='
+               f'text%20~%20%22%5C%22{f1}%5C%22%22%20'
+               f'ORDER%20BY%20status%20ASC%2Cupdated%20DESC')
+        urls.append(('Search (1 frame)', url))
+
+    # Assertion-based search (if assertion is not just a signal name)
+    if assertion and assertion not in ('UNKNOWN', ''):
+        a = quote(assertion)
+        url = (f'https://jira.mariadb.org/issues/?jql='
+               f'text%20~%20%22%5C%22{a}%5C%22%22%20'
+               f'ORDER%20BY%20status%20ASC%2Cupdated%20DESC')
+        urls.append(('Search (assertion)', url))
+
+    return urls
 
 
 def _delete_crash_files(crash_prefix, crash_vardir):
@@ -1415,6 +1470,13 @@ def run_basedir(args):
                                 sf.write(f"# Branch: {branch.stdout.strip()}\n")
                         except Exception:
                             pass
+                        # JIRA search URLs (same as pquery's ~/tt)
+                        jira_urls = _generate_jira_urls(signature)
+                        if jira_urls:
+                            sf.write(f"#\n")
+                            for label, url in jira_urls:
+                                sf.write(f"# {label}:\n")
+                                sf.write(f"#   {url}\n")
                         sf.write(f"{signature}\n")
 
                     # Save full GDB backtrace separately
@@ -1468,6 +1530,10 @@ def run_basedir(args):
                     if os.path.exists(replay_file):
                         logger.info(f"  Replay SQL: {replay_file}")
                         logger.info(f"    (sourceable — exact pquery execution order)")
+                    if jira_urls:
+                        logger.info(f"  JIRA search:")
+                        for label, url in jira_urls:
+                            logger.info(f"    {label}: {url}")
                     logger.info(f"  To reproduce:")
                     logger.info(f"    bash {crash_prefix}.sh")
                     logger.info(f"  Or with pquery directly:")
